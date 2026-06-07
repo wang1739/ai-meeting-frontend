@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import {
   User,
@@ -16,9 +17,11 @@ import {
   ChevronRight,
   Save,
   FileJson,
+  LogOut,
 } from 'lucide-react'
 import { mockUsers } from '@/data/mockData'
 import { useAppStore } from '@/stores/appStore'
+import { useAuthStore } from '@/stores/authStore'
 import Button from '@/components/ui/Button'
 import Card from '@/components/ui/Card'
 import Badge from '@/components/ui/Badge'
@@ -166,6 +169,8 @@ function SectionTitle({ icon, title }: { icon: React.ReactNode; title: string })
 // ---------- Main Component ----------
 
 export default function SettingsPage() {
+  const navigate = useNavigate()
+  const { logout, userInfo } = useAuthStore()
   const [activeTab, setActiveTab] = useState('personal')
 
   // Personal settings state
@@ -174,6 +179,8 @@ export default function SettingsPage() {
   const [personal, setPersonal] = useState<PersonalSettings>(() => ({
     ...initialPersonalSettings,
     theme: storeTheme,
+    displayName: userInfo?.name || initialPersonalSettings.displayName,
+    email: userInfo?.email || initialPersonalSettings.email,
   }))
   const [toastMessage, setToastMessage] = useState('')
   const [toastVisible, setToastVisible] = useState(false)
@@ -185,6 +192,17 @@ export default function SettingsPage() {
 
   const [newGlossaryTerm, setNewGlossaryTerm] = useState('')
   const [newGlossaryTranslation, setNewGlossaryTranslation] = useState('')
+
+  const handleLogout = () => {
+    logout()
+    navigate('/login', { replace: true })
+  }
+  
+  const handleLogoutWithConfirm = () => {
+    setLogoutConfirmVisible(true)
+  }
+  
+  const [logoutConfirmVisible, setLogoutConfirmVisible] = useState(false)
 
   const showToast = (msg: string) => {
     setToastMessage(msg)
@@ -361,6 +379,69 @@ export default function SettingsPage() {
                 </Button>
               </div>
             </Card>
+
+            {/* Logout Section */}
+            <Card>
+              <SectionTitle icon={<LogOut className="h-4 w-4" />} title="安全" />
+              <Button
+                variant="danger"
+                size="sm"
+                icon={<LogOut className="h-4 w-4" />}
+                onClick={handleLogoutWithConfirm}
+              >
+                退出登录
+              </Button>
+            </Card>
+
+            {/* 退出确认弹窗 */}
+            <AnimatePresence>
+              {logoutConfirmVisible && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+                  onClick={() => setLogoutConfirmVisible(false)}
+                >
+                  <motion.div
+                    initial={{ scale: 0.9, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    exit={{ scale: 0.9, opacity: 0 }}
+                    transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+                    className="bg-[var(--bg-card)] rounded-2xl shadow-xl p-6 w-full max-w-sm mx-4 border border-[var(--border-color)]"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="text-center">
+                      <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center">
+                        <LogOut className="h-6 w-6 text-red-500" />
+                      </div>
+                      <h3 className="text-lg font-semibold text-[var(--text-primary)] mb-2">
+                        确定要退出吗？
+                      </h3>
+                      <p className="text-sm text-[var(--text-secondary)] mb-6">
+                        退出后将需要重新登录才能继续使用
+                      </p>
+                      <div className="flex gap-3">
+                        <Button
+                          variant="secondary"
+                          className="flex-1"
+                          onClick={() => setLogoutConfirmVisible(false)}
+                        >
+                          取消
+                        </Button>
+                        <Button
+                          variant="danger"
+                          className="flex-1"
+                          onClick={handleLogout}
+                        >
+                          退出
+                        </Button>
+                      </div>
+                    </div>
+                  </motion.div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {/* Theme Section */}
             <Card>

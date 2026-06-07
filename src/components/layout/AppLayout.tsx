@@ -2,22 +2,24 @@ import { useLocation } from 'react-router-dom'
 import { Outlet } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/appStore'
+import { useMemo } from 'react'
 import Sidebar from './Sidebar'
 import TopBar from './TopBar'
 import BottomNav from './BottomNav'
 
 /**
- * Returns true when the current route is inside a real-time meeting room
- * (e.g. /meeting/123 or /meeting/abc).
+ * Returns true when the current route is inside an active meeting room
+ * (e.g. /meeting/xxx/room or /meeting/xxx/review).
+ * Does NOT match the entrance guard page (/meeting/xxx).
  */
 function isMeetingRoom(pathname: string): boolean {
-  return /^\/meeting\/[^/]+(\/.*)?$/.test(pathname)
+  return /^\/meeting\/[^/]+\/(room|review)$/.test(pathname)
 }
 
 export default function AppLayout() {
   const location = useLocation()
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed)
-  const inMeeting = isMeetingRoom(location.pathname)
+  const inMeeting = useMemo(() => isMeetingRoom(location.pathname), [location.pathname])
 
   return (
     <div className="flex h-screen w-screen overflow-hidden">

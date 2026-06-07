@@ -1,28 +1,32 @@
-import { useState, useCallback, useMemo, useRef } from 'react'
-import { useParams } from 'react-router-dom'
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { cn } from '@/lib/utils'
+import { apiFetch } from '@/lib/api'
+import { useAuthStore } from '@/stores/authStore'
+import { formatDate } from '@/utils/date'
 import {
-  Play, Pause, Download, Share2, Clock, Calendar, Users, Tag,
+  Play, Pause, Share2, Clock, Calendar, Users, Tag as TagIcon,
   MessageSquare, MessageCircle, CheckSquare, ListTodo, FileText,
-  Sparkles, Headphones, Edit3, Paperclip, Send,
+  Sparkles, Headphones, Edit3, Paperclip, Send, FileDown,
 } from 'lucide-react'
 import Button from '@/components/ui/Button'
 import Card from '@/components/ui/Card'
 import Badge from '@/components/ui/Badge'
+import Modal from '@/components/ui/Modal'
 import AvatarGroup from '@/components/ui/AvatarGroup'
 import Avatar from '@/components/ui/Avatar'
 import Skeleton from '@/components/ui/Skeleton'
+import { Tabs, Typography, Tag } from 'antd'
+const { Paragraph } = Typography
 import { useMeetingStore } from '@/stores/meetingStore'
-import {
-  mockMeetings,
-  mockUsers,
-  mockActionItems,
-  mockTags,
-  type TranscriptEntry,
-  type ActionItem,
-  type Meeting,
-} from '@/data/mockData'
+import { mockUsers, type TranscriptEntry, type ActionItem } from '@/data/mockData'
+import { exportWord } from '@/utils/exportMeeting'
+function formatTime(seconds: number): string {
+  const m = Math.floor(seconds / 60)
+  const s = Math.floor(seconds % 60)
+  return `${m}:${s.toString().padStart(2, '0')}`
+}
 
 /* ------------------------------------------------------------------ */
 /*  Animation variants                                                 */
@@ -46,69 +50,10 @@ const stagger = {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Mock: summary segments & decisions per meeting                     */
-/* ------------------------------------------------------------------ */
-const summarySegmentsMap: Record<string, { title: string; time: string; text: string }[]> = {
-  m2: [
-    { title: '性能优化进展', time: '0:00 - 1:35', text: '首页LCP从3.2秒降至1.8秒，移动端首屏从4.5秒降至2.2秒。核心措施：图片懒加载、代码分割、SSR优化及WebP格式适配。' },
-    { title: '代码审查规范修订', time: '1:45 - 2:45', text: '讨论简化PR审查流程。决定实施分级审查制度：紧急修复/样式调整一人批准即可，核心逻辑变更需至少两人审查通过。' },
-    { title: 'v2.8版本发布计划', time: '2:55 - 4:12', text: '周四灰度发布，按5%→30%→100%逐步放量。包含12个新功能、24个bug修复，需做好回滚预案。' },
-  ],
-  m4: [
-    { title: 'Q2交付回顾', time: '0:00 - 1:05', text: 'Q2完成8个项目，6个按时交付，2个延期。延期主因：需求变更频繁，B端项目中途改需求导致开发周期延长近两周。' },
-    { title: '需求变更管理', time: '1:05 - 2:20', text: '提出设置需求冻结时间点，大变更先评估影响再纳入当前迭代。跨部门信息同步需加强，建议每周一、四召开接口对齐会。' },
-    { title: '测试与自动化', time: '2:20 - 3:30', text: '核心业务线自动化测试覆盖率已达65%，目标Q3达到85%。测试资源瓶颈待解决。' },
-    { title: '文档与技术债务', time: '3:30 - 4:08', text: '提议文档更新作为项目验收必要条件，并设置文档质量评分纳入绩效考核。当前技术债务约40人天，计划Q3消化。' },
-  ],
-  m6: [
-    { title: '搜索模块优化', time: '0:00 - 1:22', text: '引入语义搜索提升准确率。基于Elasticsearch 8.x + 开源BGE embedding模型，预计3周改造时间。' },
-    { title: '数据看板自定义', time: '1:22 - 2:25', text: '提供10个预设模板和拖拽能力，分两期实现：先出基础自定义看板，第二期丰富组件库。' },
-    { title: '通知中心优化', time: '2:25 - 3:22', text: '设计通知偏好设置页面，支持按类型单独开关和免打扰时段。默认保留重要推送，后续做智能推荐。' },
-    { title: '移动端适配优化', time: '3:22 - 3:45', text: '针对页面布局错乱和操作不便问题，用响应式方案重构主要页面。' },
-  ],
-}
-
-const decisionsMap: Record<string, { text: string; time: string; speaker: string }[]> = {
-  m2: [
-    { text: '实施分级代码审查制度，核心逻辑变更需至少两人审查通过', time: '2:12', speaker: '张明' },
-    { text: 'v2.8版本周四灰度发布，按5% → 30% → 100% 比例逐步放量', time: '3:22', speaker: '李华' },
-    { text: '审查规范草案会后发群，周二前收集反馈意见', time: '2:45', speaker: '张明' },
-  ],
-  m4: [
-    { text: '需求变更需先评估影响再决定是否纳入当前迭代', time: '0:45', speaker: '张明' },
-    { text: '设置需求冻结时间点，后续变更统一放入下一期', time: '1:02', speaker: '李华' },
-    { text: '文档更新作为项目验收必要条件，设置文档质量评分机制', time: '2:55', speaker: '王芳' },
-    { text: '每个迭代至少保留20%时间处理技术债务', time: '3:40', speaker: '张明' },
-  ],
-  m6: [
-    { text: '搜索模块使用开源BGE模型升级语义搜索，预计3周完成', time: '1:05', speaker: '王芳' },
-    { text: '数据看板分两期实现：先基础自定义版，再丰富组件库', time: '2:25', speaker: '张明' },
-    { text: '通知默认保留重要推送类型，避免用户错过关键信息', time: '3:10', speaker: '张明' },
-  ],
-}
-
-const mockAttachments = [
-  { name: 'Q2路线图.pdf', size: '2.4 MB' },
-  { name: '会议议程.docx', size: '856 KB' },
-  { name: '用户调研报告.pptx', size: '5.1 MB' },
-]
-
-/* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 const userName = (id: string) => mockUsers.find((u) => u.id === id)?.name ?? '未知'
 const userColor = (id: string) => mockUsers.find((u) => u.id === id)?.color ?? '#64748B'
-
-function formatTime(seconds: number): string {
-  const m = Math.floor(seconds / 60)
-  const s = Math.floor(seconds % 60)
-  return `${m}:${s.toString().padStart(2, '0')}`
-}
-
-function formatDate(iso: string): string {
-  const d = new Date(iso)
-  return `${d.getMonth() + 1}月${d.getDate()}日 ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`
-}
 
 /* ------------------------------------------------------------------ */
 /*  Sub‑components                                                     */
@@ -256,8 +201,16 @@ interface KanbanColumnProps {
   badgeVariant: 'warning' | 'info' | 'success'
   onDrop: (itemId: string, newStatus: ActionItem['status']) => void
   onToggleCheck: (itemId: string) => void
+  onItemClick: (item: ActionItem) => void
 }
-const KanbanColumn: React.FC<KanbanColumnProps> = ({ title, status, items, badgeVariant, onDrop, onToggleCheck }) => {
+
+const statusLabelMap: Record<ActionItem['status'], { text: string; className: string }> = {
+  todo: { text: '待办', className: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' },
+  in_progress: { text: '进行中', className: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' },
+  done: { text: '已完成', className: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' },
+}
+
+const KanbanColumn: React.FC<KanbanColumnProps> = ({ title, status, items, badgeVariant, onDrop, onToggleCheck, onItemClick }) => {
   const dragOverCounter = useRef(0)
   const [isOver, setIsOver] = useState(false)
 
@@ -291,7 +244,7 @@ const KanbanColumn: React.FC<KanbanColumnProps> = ({ title, status, items, badge
   return (
     <div
       className={cn(
-        'rounded-lg border border-[var(--border-color)] bg-[var(--bg-card)] p-3 transition-colors',
+        'rounded-lg border border-[var(--border-color)] bg-[var(--bg-card)] p-4 transition-colors',
         isOver && 'border-[var(--color-primary)] bg-primary/5',
       )}
       onDragOver={handleDragOver}
@@ -300,66 +253,78 @@ const KanbanColumn: React.FC<KanbanColumnProps> = ({ title, status, items, badge
       onDrop={handleDrop}
     >
       <div className="mb-3 flex items-center justify-between">
-        <h4 className="text-sm font-semibold text-[var(--text-primary)]">{title}</h4>
+        <h4 className="text-base font-semibold text-[var(--text-primary)]">{title}</h4>
         <Badge variant={badgeVariant} size="sm">
           {items.length}
         </Badge>
       </div>
 
-      <div className="space-y-2 min-h-[80px]">
+      <div className="space-y-2 max-h-64 overflow-y-auto min-h-[80px]">
         {items.length === 0 && (
-          <p className="py-6 text-center text-xs text-[var(--text-muted)]">
-            {status === 'todo' ? '暂无待办' : status === 'in_progress' ? '暂无进行中' : '暂无已完成'}
+          <p className="py-8 text-center text-sm text-[var(--text-muted)]">
+            {status === 'todo' ? '暂无待办事项' : status === 'in_progress' ? '暂无进行中' : '暂无已完成'}
           </p>
         )}
-        {items.map((item) => (
-          <div
-            key={item.id}
-            draggable
-            onDragStart={(e) => {
-              e.dataTransfer.setData('text/plain', item.id)
-              e.dataTransfer.effectAllowed = 'move'
-            }}
-            className={cn(
-              'cursor-grab rounded-md border border-[var(--border-color)] bg-[var(--bg-primary)] p-3 transition-shadow active:cursor-grabbing',
-              'hover:shadow-custom-sm',
-            )}
-          >
-            <div className="mb-2 flex items-start gap-2">
-              <button
-                onClick={() => onToggleCheck(item.id)}
-                className={cn(
-                  'mt-0.5 shrink-0 rounded p-0.5 transition-colors',
-                  item.status === 'done'
-                    ? 'text-[var(--color-success)]'
-                    : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]',
-                )}
-              >
-                <CheckSquare className="h-4 w-4" />
-              </button>
-              <span
-                className={cn(
-                  'text-sm leading-snug',
-                  item.status === 'done' && 'text-[var(--text-muted)] line-through',
-                )}
-              >
-                {item.content}
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5">
-                <Avatar name={userName(item.assignee)} size="sm" />
-                <span className="text-[11px] text-[var(--text-muted)]">{userName(item.assignee)}</span>
-              </div>
-              {item.evidenceId && (
-                <button className="text-[11px] text-[var(--color-primary)] hover:underline">
-                  查看转写证据 #{item.evidenceId.replace('t', '')}
-                </button>
+        {items.map((item) => {
+          const statusInfo = statusLabelMap[item.status]
+          return (
+            <div
+              key={item.id}
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.setData('text/plain', item.id)
+                e.dataTransfer.effectAllowed = 'move'
+              }}
+              className={cn(
+                'cursor-grab rounded-lg border border-[var(--border-color)] bg-[var(--bg-primary)] p-4 transition-all active:cursor-grabbing',
+                'hover:shadow-custom-sm hover:border-[var(--color-primary)]/30 hover:bg-[var(--bg-primary)]/80',
               )}
+            >
+              <div className="flex items-start gap-2">
+                <button
+                  onClick={() => onToggleCheck(item.id)}
+                  className={cn(
+                    'mt-0.5 shrink-0 rounded p-0.5 transition-colors',
+                    item.status === 'done'
+                      ? 'text-[var(--color-success)]'
+                      : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]',
+                  )}
+                >
+                  <CheckSquare className="h-4 w-4" />
+                </button>
+                <p
+                  className={cn(
+                    'flex-1 text-base leading-snug line-clamp-2 cursor-pointer transition-colors hover:text-[var(--color-primary)]',
+                    item.status === 'done' && 'text-[var(--text-muted)] line-through',
+                  )}
+                  onClick={() => onItemClick(item)}
+                >
+                  {item.content}
+                </p>
+                <span
+                  className={cn(
+                    'shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium',
+                    statusInfo.className,
+                  )}
+                >
+                  {statusInfo.text}
+                </span>
+              </div>
+
+              <div className="mt-2 flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <Avatar name={userName(item.assignee)} size="sm" />
+                  <span className="text-xs text-[var(--text-muted)]">{userName(item.assignee)}</span>
+                </div>
+                {item.evidenceId && (
+                  <button className="text-xs text-[var(--color-primary)] hover:underline">
+                    查看转写证据 #{item.evidenceId.replace('t', '')}
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
     </div>
   )
@@ -370,12 +335,87 @@ const KanbanColumn: React.FC<KanbanColumnProps> = ({ title, status, items, badge
 /* ------------------------------------------------------------------ */
 export default function MeetingReview() {
   const { meetingId } = useParams<{ meetingId: string }>()
+  const navigate = useNavigate()
   const storeMeetings = useMeetingStore((s) => s.meetings)
-  const meeting: Meeting | undefined = [...storeMeetings, ...mockMeetings].find((m) => m.id === meetingId)
+  const meeting = storeMeetings.find((m) => m.id === meetingId)
+
+  /* ── API state ── */
+  const [summary, setSummary] = useState<any>(null)
+  const [actionItems, setActionItems] = useState<any[]>([])
+  const [transcriptsSegment, setTranscriptsSegment] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [generating, setGenerating] = useState(false)
+  const [error, setError] = useState('')
+
+  /* ── fetch data ── */
+  useEffect(() => {
+    const fetchData = async () => {
+      if (!meetingId) return
+      setLoading(true)
+      setError('')
+
+      // 提前检查 token 是否存在，避免无 token 请求被 401 拦截跳转登录
+      const token = useAuthStore.getState().token
+      if (!token) {
+        // 等待一帧让 persist 完成 rehydrate
+        await new Promise((r) => setTimeout(r, 100))
+        const retryToken = useAuthStore.getState().token
+        if (!retryToken) {
+          setError('登录已过期，请重新登录')
+          setLoading(false)
+          setTimeout(() => navigate('/login', { replace: true }), 1500)
+          return
+        }
+      }
+
+      try {
+        // 1. 先尝试获取已有摘要
+        let summaryData = await apiFetch(`/meetings/${meetingId}/summary`)
+        
+        // 2. 如果没有摘要，调用 AI 生成
+        if (!summaryData || !summaryData.oneLineSummary) {
+          setGenerating(true)
+          try {
+            await apiFetch(`/meetings/${meetingId}/generate-summary`, {
+              method: 'POST',
+            })
+            // 重新获取
+            summaryData = await apiFetch(`/meetings/${meetingId}/summary`)
+          } catch (genErr: any) {
+            setError('AI 生成摘要失败: ' + (genErr.message || '未知错误'))
+          } finally {
+            setGenerating(false)
+          }
+        }
+
+        // 3. 获取行动项
+        const itemsData = await apiFetch(`/meetings/${meetingId}/action-items`)
+
+        // 4. 获取转写数据
+        const transcriptData = await apiFetch(`/meetings/${meetingId}/transcripts`)
+
+        setSummary(summaryData)
+        setActionItems(itemsData)
+        setTranscriptsSegment(Array.isArray(transcriptData) ? transcriptData : [])
+      } catch (err: any) {
+        // 区分 401 与其他错误
+        const msg = err.message || ''
+        if (msg.includes('登录已过期') || msg.includes('401')) {
+          setError('登录已过期，请重新登录')
+          setTimeout(() => navigate('/login', { replace: true }), 1500)
+        } else {
+          setError(err.message || '加载失败')
+        }
+      } finally {
+        setLoading(false)
+      }
+    }
+    fetchData()
+  }, [meetingId, navigate])
 
   /* ---------- Player state ---------- */
   const [isPlaying, setIsPlaying] = useState(false)
-  const [progress, setProgress] = useState(0) // 0‑100
+  const [progress, setProgress] = useState(0)
   const [activeEntryId, setActiveEntryId] = useState<string | null>(null)
   const progressRef = useRef<HTMLDivElement>(null)
 
@@ -387,19 +427,227 @@ export default function MeetingReview() {
   const [activeTag, setActiveTag] = useState<string | null>(null)
 
   /* ---------- Kanban state ---------- */
-  const [kanbanItems, setKanbanItems] = useState<ActionItem[]>(() =>
-    mockActionItems.filter((a) => a.meetingId === meetingId),
-  )
+  const [kanbanItems, setKanbanItems] = useState<ActionItem[]>([])
+
+  // Sync kanbanItems when actionItems from API change
+  useEffect(() => {
+    setKanbanItems(actionItems.map((item: any) => ({
+      id: item.id,
+      meetingId: meetingId || '',
+      content: item.description,
+      assignee: item.assignee,
+      status: item.status === 'open' ? 'todo' : item.status === 'in_progress' ? 'in_progress' : 'done',
+      evidenceId: undefined,
+      dueDate: item.dueDate,
+    })))
+  }, [actionItems, meetingId])
 
   /* ---------- AI Q&A state ---------- */
   const [qaInput, setQaInput] = useState('')
 
+  /* ---------- Detail modal state ---------- */
+  const [detailItem, setDetailItem] = useState<ActionItem | null>(null)
+
+  /* ---------- Kanban tab state ---------- */
+  const [activeTab, setActiveTab] = useState<string>('todo')
+
+  /* ---------- Drag & Drop state ---------- */
+  const [draggingItemId, setDraggingItemId] = useState<string | null>(null)
+  const [hoverTargetId, setHoverTargetId] = useState<string | null>(null)
+
+  /* ---------- Kanban handlers ---------- */
+  const handleKanbanDrop = useCallback((itemId: string, newStatus: ActionItem['status'], targetId?: string) => {
+    setKanbanItems((prev) => {
+      const sourceItem = prev.find((i) => i.id === itemId)
+      if (!sourceItem) return prev
+
+      // Same status → reorder within the group, insert at target position
+      if (sourceItem.status === newStatus && targetId && targetId !== itemId) {
+        const without = prev.filter((i) => i.id !== itemId)
+        const insertAt = without.findIndex((i) => i.id === targetId)
+        if (insertAt === -1) return prev
+        const result = [...without]
+        result.splice(insertAt, 0, sourceItem)
+        return result
+      }
+
+      // Different status → change status
+      if (sourceItem.status !== newStatus) {
+        return prev.map((item) =>
+          item.id === itemId ? { ...item, status: newStatus } : item,
+        )
+      }
+
+      // Same status but no target → no-op
+      return prev
+    })
+    setDraggingItemId(null)
+    setHoverTargetId(null)
+  }, [])
+
+  const handleToggleCheck = useCallback((itemId: string) => {
+    setKanbanItems((prev) => {
+      const item = prev.find((i) => i.id === itemId)
+      if (!item) return prev
+      const nextStatus = item.status === 'done' ? 'todo' : 'done'
+      const updated = prev.map((i) =>
+        i.id === itemId ? { ...i, status: nextStatus } : i,
+      )
+
+      // Persist to backend asynchronously
+      apiFetch(`/meetings/${meetingId}/action-items/${itemId}`, {
+        method: 'PATCH',
+        body: { status: nextStatus },
+      }).catch(() => {
+        // Rollback on failure
+        setKanbanItems(prev)
+      })
+
+      return updated
+    })
+  }, [meetingId])
+
+  /* ---------- Kanban cards render helper ---------- */
+  const renderKanbanCards = useCallback((items: ActionItem[], status: ActionItem['status']) => {
+    if (items.length === 0) {
+      return (
+        <div className="flex w-full items-center justify-center py-12">
+          <p className="text-sm text-[var(--text-muted)]">
+            {status === 'todo' ? '暂无待办事项' : status === 'in_progress' ? '暂无进行中' : '暂无已完成'}
+          </p>
+        </div>
+      )
+    }
+    return (
+      <div
+        className="flex w-full flex-col gap-3"
+        onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move' }}
+        onDrop={(e) => {
+          e.preventDefault()
+          const itemId = e.dataTransfer.getData('text/plain')
+          if (itemId) handleKanbanDrop(itemId, status)
+        }}
+      >
+        {items.map((item) => {
+          const tagColor = item.status === 'todo' ? 'orange' : item.status === 'in_progress' ? 'blue' : 'green'
+          const tagText = item.status === 'todo' ? '待办' : item.status === 'in_progress' ? '进行中' : '已完成'
+          const isDragging = draggingItemId === item.id
+          const isHoverTarget = hoverTargetId === item.id
+          return (
+            <div
+              key={item.id}
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.setData('text/plain', item.id)
+                e.dataTransfer.effectAllowed = 'move'
+                setDraggingItemId(item.id)
+              }}
+              onDragEnd={() => {
+                setDraggingItemId(null)
+                setHoverTargetId(null)
+              }}
+              onDragOver={(e) => {
+                e.preventDefault()
+                e.dataTransfer.dropEffect = 'move'
+                setHoverTargetId(item.id)
+              }}
+              onDragLeave={(e) => {
+                // Only clear if leaving the card itself (not entering a child)
+                const related = e.relatedTarget as Node | null
+                if (!related || !e.currentTarget.contains(related)) {
+                  setHoverTargetId(null)
+                }
+              }}
+              onDrop={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                const itemId = e.dataTransfer.getData('text/plain')
+                if (itemId) handleKanbanDrop(itemId, status, item.id)
+              }}
+              className={cn(
+                'w-full cursor-grab overflow-hidden rounded-lg border border-[var(--border-color)] bg-[var(--card-bg)] p-4 transition-all hover:shadow-sm hover:border-[var(--color-primary)]/30 active:cursor-grabbing',
+                isDragging && 'opacity-40',
+                isHoverTarget && '!border-[var(--color-primary)] !ring-2 !ring-[var(--color-primary)]/40',
+              )}
+            >
+              <div className="flex items-start gap-2">
+                <button
+                  onClick={() => handleToggleCheck(item.id)}
+                  className={cn(
+                    'mt-0.5 shrink-0 rounded p-0.5 transition-colors',
+                    item.status === 'done'
+                      ? 'text-[var(--color-success)]'
+                      : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]',
+                  )}
+                >
+                  <CheckSquare className="h-4 w-4" />
+                </button>
+                <Paragraph
+                  ellipsis={{ rows: 2 }}
+                  className="!mb-0 min-w-0 flex-1 cursor-pointer transition-colors hover:text-[var(--color-primary)]"
+                  onClick={() => setDetailItem(item)}
+                  style={{
+                    color: item.status === 'done' ? 'var(--text-muted)' : 'var(--text-primary)',
+                    textDecoration: item.status === 'done' ? 'line-through' : 'none',
+                    wordBreak: 'break-all',
+                    overflowWrap: 'break-word',
+                  }}
+                >
+                  {item.content}
+                </Paragraph>
+                <Tag color={tagColor} className="shrink-0 !mt-0.5">{tagText}</Tag>
+              </div>
+              <div className="mt-2 flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <Avatar name={userName(item.assignee)} size="sm" />
+                  <span className="text-xs text-[var(--text-muted)]">{userName(item.assignee)}</span>
+                </div>
+                {item.evidenceId && (
+                  <button className="text-xs text-[var(--color-primary)] hover:underline">
+                    查看转写证据 #{item.evidenceId.replace('t', '')}
+                  </button>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    )
+  }, [handleKanbanDrop, handleToggleCheck, draggingItemId, hoverTargetId, setDraggingItemId, setHoverTargetId])
+
   /* ========== Derived data ========== */
 
-  const segments = meeting ? summarySegmentsMap[meeting.id] ?? [] : []
-  const decisions = meeting ? decisionsMap[meeting.id] ?? [] : []
-  const transcript: TranscriptEntry[] = meeting?.transcript ?? []
+  // Parse detailedSummary markdown into sections
+  const segments = useMemo(() => {
+    if (!summary?.detailedSummary) return []
+    try {
+      const lines = summary.detailedSummary.split('\n')
+      const sections: { title: string; time: string; text: string }[] = []
+      let currentTitle = ''
+      let currentText: string[] = []
+      for (const line of lines) {
+        if (line.startsWith('## ')) {
+          if (currentTitle) {
+            sections.push({ title: currentTitle, time: '', text: currentText.join('\n').trim() })
+          }
+          currentTitle = line.replace('## ', '').trim()
+          currentText = []
+        } else if (line.trim()) {
+          currentText.push(line.trim())
+        }
+      }
+      if (currentTitle) {
+        sections.push({ title: currentTitle, time: '', text: currentText.join('\n').trim() })
+      }
+      return sections
+    } catch {
+      return []
+    }
+  }, [summary])
 
+  const decisions = summary?.keyDecisions || []
+  const keywords = summary?.keywords || []
+  const transcript: TranscriptEntry[] = transcriptsSegment
   const filteredTranscript = useMemo(() => {
     if (!activeTag) return transcript
     return transcript.filter((e) => e.text.includes(activeTag))
@@ -430,18 +678,13 @@ export default function MeetingReview() {
     const rect = progressRef.current.getBoundingClientRect()
     const pct = Math.min(100, Math.max(0, ((e.clientX - rect.left) / rect.width) * 100))
     setProgress(pct)
-    const idx = Math.floor((pct / 100) * transcript.length)
-    const entry = transcript[Math.min(idx, transcript.length - 1)]
-    if (entry) setActiveEntryId(entry.id)
   }
 
   const jumpToEntry = useCallback(
     (entry: TranscriptEntry) => {
       setActiveEntryId(entry.id)
-      const idx = transcript.indexOf(entry)
-      if (idx >= 0) setProgress((idx / transcript.length) * 100)
     },
-    [transcript],
+    [],
   )
 
   const handleSaveEdit = useCallback((entryId: string, text: string) => {
@@ -449,41 +692,32 @@ export default function MeetingReview() {
     setEditingId(null)
   }, [])
 
-  const handleKanbanDrop = useCallback((itemId: string, newStatus: ActionItem['status']) => {
-    setKanbanItems((prev) =>
-      prev.map((item) => (item.id === itemId ? { ...item, status: newStatus } : item)),
-    )
-  }, [])
-
-  const handleToggleCheck = useCallback((itemId: string) => {
-    setKanbanItems((prev) =>
-      prev.map((item) => {
-        if (item.id !== itemId) return item
-        const next = item.status === 'done' ? 'todo' : 'done'
-        return { ...item, status: next }
-      }),
-    )
-  }, [])
-
   const handleSendQa = useCallback(() => {
     if (!qaInput.trim()) return
     setQaInput('')
-    // Mock: do nothing, just clear input
   }, [qaInput])
 
   /* ========== Loading / Error states ========== */
 
-  if (!meeting) {
+  if (loading || !meeting || generating) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center">
-        {meetingId ? (
+        {!meeting && meetingId ? (
           <div className="text-center">
             <FileText className="mx-auto mb-3 h-12 w-12 text-[var(--text-muted)]" />
             <p className="text-lg font-medium text-[var(--text-primary)]">未找到会议</p>
             <p className="mt-1 text-sm text-[var(--text-secondary)]">ID: {meetingId} 的会议不存在</p>
           </div>
         ) : (
-          <div className="w-full max-w-lg space-y-4">
+          <div className="w-full max-w-lg space-y-4 text-center">
+            {generating && (
+              <div className="mb-4 flex flex-col items-center gap-3">
+                <div className="inline-flex items-center gap-2 rounded-full bg-primary/10 px-4 py-2 text-sm text-[var(--color-primary)]">
+                  <Sparkles className="h-4 w-4 animate-pulse" />
+                  <span>AI 正在生成会议摘要...</span>
+                </div>
+              </div>
+            )}
             <Skeleton variant="card" />
             <Skeleton variant="text" />
             <Skeleton variant="text" />
@@ -493,9 +727,34 @@ export default function MeetingReview() {
     )
   }
 
-  const attendeeUsers = meeting.attendees.map((aid) => ({
-    name: userName(aid),
-  }))
+  if (error) {
+    return (
+      <div className="flex min-h-[60vh] items-center justify-center">
+        <div className="text-center">
+          <FileText className="mx-auto mb-3 h-12 w-12 text-red-400" />
+          <p className="text-lg font-medium text-red-500">加载失败</p>
+          <p className="mt-1 text-sm text-[var(--text-secondary)]">{error}</p>
+          <Button
+            variant="primary"
+            size="sm"
+            className="mt-4"
+            onClick={() => window.location.reload()}
+          >
+            重新加载
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  // 参会人：优先使用后端返回的完整 participants，兜底用 mockUsers
+  const rawParticipants = (meeting as any).participants as
+    | { user: { id: string; name: string; email: string }; role: string; isSpeaker: boolean }[]
+    | undefined
+  const hasRealParticipants = rawParticipants && rawParticipants.length > 0
+  const attendeeUsers = hasRealParticipants
+    ? rawParticipants.map((p) => ({ name: p.user.name }))
+    : meeting.attendees.map((aid) => ({ name: mockUsers.find((u) => u.id === aid)?.name ?? '成员' }))
 
   const allCompleted = kanbanStats.done + kanbanStats.in_progress + kanbanStats.todo
 
@@ -503,7 +762,7 @@ export default function MeetingReview() {
   return (
     <div className="min-h-screen bg-[var(--bg-primary)]">
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-7">
           {/* ========== HERO ========== */}
           <motion.div
             className="col-span-full"
@@ -536,7 +795,11 @@ export default function MeetingReview() {
                 <div className="mt-4 flex flex-wrap items-center gap-4">
                   <div className="inline-flex items-center gap-2">
                     <Users className="h-4 w-4 text-[var(--text-muted)]" />
-                    <AvatarGroup users={attendeeUsers} max={5} size="sm" />
+                    {attendeeUsers.length > 0 ? (
+                      <AvatarGroup users={attendeeUsers} max={5} size="sm" />
+                    ) : (
+                      <span className="text-sm text-[var(--text-muted)]">暂无参会人</span>
+                    )}
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                     {meeting.tags?.map((tag) => (
@@ -549,11 +812,15 @@ export default function MeetingReview() {
 
                 {/* Action buttons */}
                 <div className="mt-5 flex flex-wrap items-center gap-3">
-                  <button className="gradient-btn inline-flex items-center gap-2" onClick={togglePlay}>
-                    {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-                    {isPlaying ? '暂停播放' : '播放录音'}
+                  <button className="gradient-btn inline-flex items-center gap-2" disabled>
+                    <Headphones className="h-4 w-4" />
+                    真实录音回放将在音频存储功能上线后开放
                   </button>
-                  <Button variant="secondary" icon={<Download className="h-4 w-4" />}>
+                  <Button
+                    variant="secondary"
+                    icon={<FileDown className="h-4 w-4" />}
+                    onClick={() => exportWord(meeting, summary, actionItems)}
+                  >
                     导出纪要
                   </Button>
                   <Button variant="ghost" icon={<Share2 className="h-4 w-4" />}>
@@ -575,7 +842,7 @@ export default function MeetingReview() {
 
           {/* ========== LEFT COLUMN — AI 精要 ========== */}
           <motion.div
-            className="space-y-6 md:col-span-2 lg:col-span-1"
+            className="space-y-4 md:col-span-2 lg:col-span-3"
             variants={stagger}
             initial="hidden"
             animate="visible"
@@ -593,12 +860,12 @@ export default function MeetingReview() {
                   {segments.map((seg, i) => (
                     <Card key={i} className="!p-4">
                       <div className="mb-1 flex items-center justify-between">
-                        <span className="text-sm font-medium text-[var(--text-primary)]">{seg.title}</span>
+                        <span className="text-base font-medium text-[var(--text-primary)]">{seg.title}</span>
                         <Badge variant="info" size="sm">
                           {seg.time}
                         </Badge>
                       </div>
-                      <p className="text-sm leading-relaxed text-[var(--text-secondary)]">{seg.text}</p>
+                      <p className="text-base leading-relaxed text-[var(--text-secondary)]">{seg.text}</p>
                     </Card>
                   ))}
                 </div>
@@ -608,42 +875,29 @@ export default function MeetingReview() {
             {/* 关键词 */}
             <motion.div variants={fadeUp}>
               <div className="mb-3 flex items-center gap-2">
-                <Tag className="h-5 w-5 text-[var(--color-primary)]" />
+                <TagIcon className="h-5 w-5 text-[var(--color-primary)]" />
                 <h3 className="text-base font-semibold text-[var(--text-primary)]">关键词</h3>
               </div>
               <Card className="!p-4">
-                <div className="flex flex-wrap gap-2">
-                  {mockTags.map((tag) => {
-                    let sizeClass = 'text-xs px-2.5 py-1'
-                    if (tag.frequency >= 10) sizeClass = 'text-sm px-3.5 py-1.5'
-                    else if (tag.frequency >= 5) sizeClass = 'text-xs px-3 py-1'
-                    return (
+                {keywords.length === 0 ? (
+                  <p className="text-sm text-[var(--text-muted)]">暂无关键词</p>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {keywords.map((word: string, i: number) => (
                       <button
-                        key={tag.id}
-                        onClick={() => setActiveTag(activeTag === tag.word ? null : tag.word)}
+                        key={i}
+                        onClick={() => setActiveTag(activeTag === word ? null : word)}
                         className={cn(
-                          'rounded-full border font-medium transition-all',
-                          activeTag === tag.word
+                          'rounded-full border font-medium transition-all text-xs px-2.5 py-1',
+                          activeTag === word
                             ? 'border-[var(--color-primary)] bg-[var(--color-primary)] text-white'
                             : 'border-[var(--border-color)] bg-[var(--bg-primary)] text-[var(--text-secondary)] hover:border-[var(--color-primary)] hover:text-[var(--color-primary)]',
-                          sizeClass,
                         )}
                       >
-                        {tag.word}
+                        {word}
                       </button>
-                    )
-                  })}
-                </div>
-                {activeTag && (
-                  <p className="mt-2 text-xs text-[var(--text-muted)]">
-                    正在筛选包含 "<span className="font-medium text-[var(--color-primary)]">{activeTag}</span>" 的转写内容
-                    <button
-                      className="ml-2 text-[var(--color-primary)] hover:underline"
-                      onClick={() => setActiveTag(null)}
-                    >
-                      清除筛选
-                    </button>
-                  </p>
+                    ))}
+                  </div>
                 )}
               </Card>
             </motion.div>
@@ -658,18 +912,13 @@ export default function MeetingReview() {
                 <p className="text-sm text-[var(--text-muted)]">暂无决策记录</p>
               ) : (
                 <div className="space-y-2">
-                  {decisions.map((d, i) => (
-                    <Card key={i} className="!flex !items-start !gap-3 !p-3.5">
+                  {decisions.map((d: string, i: number) => (
+                    <Card key={i} className="!flex !items-start !gap-3 !p-4">
                       <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--color-primary)]/10 text-[10px] font-bold text-[var(--color-primary)]">
                         {i + 1}
                       </span>
                       <div className="min-w-0 flex-1">
-                        <p className="text-sm leading-snug text-[var(--text-primary)]">{d.text}</p>
-                        <div className="mt-1 flex items-center gap-2 text-xs text-[var(--text-muted)]">
-                          <span>{d.speaker}</span>
-                          <span>·</span>
-                          <span>{d.time}</span>
-                        </div>
+                        <p className="text-base leading-snug text-[var(--text-primary)]">{d}</p>
                       </div>
                     </Card>
                   ))}
@@ -680,52 +929,22 @@ export default function MeetingReview() {
 
           {/* ========== CENTER COLUMN — 转写回放 ========== */}
           <motion.div
-            className="space-y-6 lg:col-span-1"
+            className="space-y-4 lg:col-span-2"
             variants={stagger}
             initial="hidden"
             animate="visible"
           >
-            {/* Audio player mock */}
+            {/* Audio player - placeholder */}
             <motion.div variants={fadeUp}>
               <div className="mb-3 flex items-center gap-2">
                 <Headphones className="h-5 w-5 text-[var(--color-primary)]" />
                 <h3 className="text-base font-semibold text-[var(--text-primary)]">录音回放</h3>
               </div>
-              <Card className="!p-4">
-                {/* Waveform */}
-                <div className="h-12 w-full overflow-hidden rounded-md bg-[var(--bg-primary)]">
-                  <Waveform isPlaying={isPlaying} />
-                </div>
-
-                {/* Controls */}
-                <div className="mt-3 flex items-center gap-3">
-                  <button
-                    onClick={togglePlay}
-                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--color-primary)] text-white transition-transform hover:scale-105 active:scale-95"
-                  >
-                    {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-                  </button>
-
-                  {/* Progress bar */}
-                  <div
-                    ref={progressRef}
-                    className="relative h-2 flex-1 cursor-pointer rounded-full bg-[var(--border-color)]"
-                    onClick={handleProgressClick}
-                  >
-                    <div
-                      className="h-full rounded-full bg-gradient-to-r from-[var(--color-gradient-start)] to-[var(--color-gradient-end)] transition-all duration-100"
-                      style={{ width: `${progress}%` }}
-                    />
-                    <div
-                      className="absolute top-1/2 h-3.5 w-3.5 -translate-y-1/2 rounded-full border-2 border-white bg-[var(--color-primary)] shadow-sm transition-all duration-100"
-                      style={{ left: `${progress}%`, marginLeft: -7 }}
-                    />
-                  </div>
-
-                  <span className="shrink-0 text-xs text-[var(--text-muted)]">
-                    {formatTime((progress / 100) * 260)} / 4:20
-                  </span>
-                </div>
+              <Card className="!rounded-lg !p-8 text-center">
+                <Headphones className="mx-auto mb-3 h-10 w-10 text-[var(--text-muted)]" />
+                <p className="text-sm text-[var(--text-secondary)]">
+                  真实录音回放将在音频存储功能上线后开放
+                </p>
               </Card>
             </motion.div>
 
@@ -735,45 +954,45 @@ export default function MeetingReview() {
                 <div className="flex items-center gap-2">
                   <MessageSquare className="h-5 w-5 text-[var(--color-primary)]" />
                   <h3 className="text-base font-semibold text-[var(--text-primary)]">转写文本</h3>
+                  {transcriptsSegment.length > 0 && (
+                    <span className="text-xs text-[var(--text-muted)]">{transcriptsSegment.length} 条</span>
+                  )}
                 </div>
-                {activeTag && (
-                  <Badge variant="primary" size="sm">
-                    已筛选
-                  </Badge>
-                )}
               </div>
 
-              {filteredTranscript.length === 0 ? (
-                <Card className="!p-8 text-center">
-                  <MessageSquare className="mx-auto mb-2 h-8 w-8 text-[var(--text-muted)]" />
-                  <p className="text-sm text-[var(--text-secondary)]">
-                    {transcript.length === 0 ? '暂无转写记录' : '没有匹配的转写内容'}
-                  </p>
-                </Card>
-              ) : (
-                <Card className="!p-2">
-                  <div className="max-h-[560px] space-y-0.5 overflow-y-auto">
-                    {filteredTranscript.map((entry) => (
-                      <TranscriptItem
-                        key={entry.id}
-                        entry={entry}
-                        isActive={activeEntryId === entry.id}
-                        isEdited={entry.id in editedEntries}
-                        onJump={() => jumpToEntry(entry)}
-                        onEdit={() => setEditingId(entry.id)}
-                        onSave={(text) => handleSaveEdit(entry.id, text)}
-                        onCancel={() => setEditingId(null)}
-                      />
+              <Card className="!p-0">
+                {transcriptsSegment.length === 0 ? (
+                  <div className="p-8 text-center">
+                    <MessageSquare className="mx-auto mb-2 h-8 w-8 text-[var(--text-muted)]" />
+                    <p className="text-sm text-[var(--text-secondary)]">
+                      转写内容将在接入实时转写后展示
+                    </p>
+                    <p className="mt-1 text-xs text-[var(--text-muted)]">
+                      届时将支持查看完整的会议记录和时间轴
+                    </p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-[var(--border-color)] max-h-[500px] overflow-y-auto">
+                    {transcriptsSegment.map((seg: any, idx: number) => (
+                      <div key={seg.id || idx} className="px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-xs font-medium text-[var(--color-primary)]">{seg.speakerLabel || 'Speaker'}</span>
+                          <span className="text-[10px] text-[var(--text-muted)]">
+                            {seg.startTimeMs ? new Date(seg.startTimeMs).toISOString().substr(14, 5) : ''}
+                          </span>
+                        </div>
+                        <p className="text-sm text-[var(--text-primary)] leading-relaxed">{seg.text}</p>
+                      </div>
                     ))}
                   </div>
-                </Card>
-              )}
+                )}
+              </Card>
             </motion.div>
           </motion.div>
 
           {/* ========== RIGHT COLUMN ========== */}
           <motion.div
-            className="space-y-6 lg:col-span-1"
+            className="space-y-4 lg:col-span-2"
             variants={stagger}
             initial="hidden"
             animate="visible"
@@ -792,36 +1011,48 @@ export default function MeetingReview() {
 
               {kanbanItems.length === 0 ? (
                 <Card className="!p-8 text-center">
-                  <CheckSquare className="mx-auto mb-2 h-8 w-8 text-[var(--text-muted)]" />
+                  <CheckSquare className="mx-auto mb-3 h-10 w-10 text-[var(--text-muted)]" />
                   <p className="text-sm text-[var(--text-secondary)]">暂无待办事项</p>
                 </Card>
               ) : (
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                  <KanbanColumn
-                    title="待办"
-                    status="todo"
-                    items={todoItems}
-                    badgeVariant="warning"
-                    onDrop={handleKanbanDrop}
-                    onToggleCheck={handleToggleCheck}
+                <>
+                  <style>{`
+                    .kanban-tabs .ant-tabs-nav::before { border-bottom: none !important; }
+                    .kanban-tabs .ant-tabs-nav-list { width: 100% !important; display: flex !important; }
+                    .kanban-tabs .ant-tabs-tab {
+                      flex: 1 !important;
+                      justify-content: center !important;
+                      margin: 0 !important;
+                      background: #1e293b !important;
+                      color: #ffffff !important;
+                      border-radius: 0 !important;
+                      border: none !important;
+                      transition: background 0.2s !important;
+                    }
+                    .kanban-tabs .ant-tabs-tab:first-child { border-radius: 6px 0 0 6px !important; }
+                    .kanban-tabs .ant-tabs-tab:last-child { border-radius: 0 6px 6px 0 !important; }
+                    .kanban-tabs .ant-tabs-tab-active { background: #6366f1 !important; }
+                    .kanban-tabs .ant-tabs-tab-btn {
+                      color: #ffffff !important;
+                      width: 100% !important;
+                      text-align: center !important;
+                      font-size: 13px !important;
+                    }
+                    .kanban-tabs .ant-tabs-tab:hover .ant-tabs-tab-btn { color: #ffffff !important; }
+                    .kanban-tabs .ant-tabs-content-holder { padding-top: 12px !important; }
+                    .kanban-tabs .ant-tabs-ink-bar { display: none !important; }
+                  `}</style>
+                  <Tabs
+                    activeKey={activeTab}
+                    onChange={setActiveTab}
+                    className="kanban-tabs w-full"
+                    items={[
+                      { key: 'todo', label: `待办 (${todoItems.length})`, children: renderKanbanCards(todoItems, 'todo') },
+                      { key: 'in_progress', label: `进行中 (${inProgressItems.length})`, children: renderKanbanCards(inProgressItems, 'in_progress') },
+                      { key: 'done', label: `已完成 (${doneItems.length})`, children: renderKanbanCards(doneItems, 'done') },
+                    ]}
                   />
-                  <KanbanColumn
-                    title="进行中"
-                    status="in_progress"
-                    items={inProgressItems}
-                    badgeVariant="info"
-                    onDrop={handleKanbanDrop}
-                    onToggleCheck={handleToggleCheck}
-                  />
-                  <KanbanColumn
-                    title="已完成"
-                    status="done"
-                    items={doneItems}
-                    badgeVariant="success"
-                    onDrop={handleKanbanDrop}
-                    onToggleCheck={handleToggleCheck}
-                  />
-                </div>
+                </>
               )}
             </motion.div>
 
@@ -832,18 +1063,10 @@ export default function MeetingReview() {
                 <h3 className="text-base font-semibold text-[var(--text-primary)]">附件列表</h3>
               </div>
               <Card className="!p-0 divide-y divide-[var(--border-color)]">
-                {mockAttachments.map((file, i) => (
-                  <div key={i} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-800/30">
-                    <FileText className="h-8 w-8 shrink-0 text-[var(--color-primary)]" />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium text-[var(--text-primary)]">{file.name}</p>
-                      <p className="text-xs text-[var(--text-muted)]">{file.size}</p>
-                    </div>
-                    <button className="shrink-0 rounded p-1.5 text-[var(--text-muted)] transition-colors hover:bg-slate-100 hover:text-[var(--color-primary)] dark:hover:bg-slate-800">
-                      <Download className="h-4 w-4" />
-                    </button>
-                  </div>
-                ))}
+                <div className="flex flex-col items-center gap-2 px-4 py-6 text-center">
+                  <Paperclip className="h-8 w-8 text-[var(--text-muted)]" />
+                  <p className="text-sm text-[var(--text-muted)]">暂无附件</p>
+                </div>
               </Card>
             </motion.div>
 
@@ -876,13 +1099,13 @@ export default function MeetingReview() {
                     <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--color-primary)]/10">
                       <MessageCircle className="h-3 w-3 text-[var(--color-primary)]" />
                     </div>
-                    <p className="text-sm text-[var(--text-primary)]">本次会议的主要结论是什么？</p>
+                    <p className="text-base text-[var(--text-primary)]">本次会议的主要结论是什么？</p>
                   </div>
                   <div className="flex items-start gap-2">
-                    <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--color-ai)]/10">
-                      <Sparkles className="h-3 w-3 text-[var(--color-ai)]" />
+                    <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[var(--color-gradient-start)] to-[var(--color-gradient-end)]">
+                      <Sparkles className="h-3 w-3 text-white" />
                     </div>
-                    <p className="text-sm leading-relaxed text-[var(--text-secondary)]">
+                    <p className="text-base leading-relaxed text-[var(--text-secondary)]">
                       会议讨论了三个核心议题：<strong className="text-[var(--text-primary)]">性能优化</strong>（首页LCP降至1.8秒）、
                       <strong className="text-[var(--text-primary)]">代码审查规范</strong>（实施分级审查制度）和
                       <strong className="text-[var(--text-primary)]">发布计划</strong>（v2.8版本周四灰度发布）。
@@ -894,6 +1117,43 @@ export default function MeetingReview() {
             </motion.div>
           </motion.div>
         </div>
+
+        {/* 行动项详情弹窗 */}
+        <Modal
+          isOpen={!!detailItem}
+          onClose={() => setDetailItem(null)}
+          title="行动项详情"
+          size="md"
+        >
+          {detailItem && (() => {
+            const info = statusLabelMap[detailItem.status]
+            return (
+              <div className="space-y-4">
+                <p className="text-sm leading-relaxed text-[var(--text-secondary)]">{detailItem.content}</p>
+                <div className="flex flex-wrap gap-4 text-xs">
+                  <span className="inline-flex items-center gap-1.5 text-[var(--text-muted)]">
+                    负责人：
+                    <span className="font-medium text-[var(--text-primary)]">{detailItem.assignee || '未分配'}</span>
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 text-[var(--text-muted)]">
+                    状态：
+                    <span className={cn('rounded-full px-2 py-0.5 text-[11px] font-medium', info.className)}>
+                      {info.text}
+                    </span>
+                  </span>
+                  {detailItem.dueDate && (
+                    <span className="inline-flex items-center gap-1.5 text-[var(--text-muted)]">
+                      截止日期：
+                      <span className="font-medium text-[var(--text-primary)]">
+                        {new Date(detailItem.dueDate).toLocaleDateString('zh-CN')}
+                      </span>
+                    </span>
+                  )}
+                </div>
+              </div>
+            )
+          })()}
+        </Modal>
       </div>
     </div>
   )

@@ -1,7 +1,8 @@
-import { useState, useMemo, useRef } from 'react'
+import { useState, useMemo, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { cn } from '@/lib/utils'
+import { apiFetch } from '@/lib/api'
 import {
   FileText, Users, Bot, ChevronLeft, ChevronRight, Check, Upload, X, Clock,
   Sparkles, Search, Calendar, ExternalLink, Video, MessageSquare, Globe, Tag, Link,
@@ -11,9 +12,9 @@ import Button from '@/components/ui/Button'
 import Card from '@/components/ui/Card'
 import Badge from '@/components/ui/Badge'
 import Avatar from '@/components/ui/Avatar'
-import { mockUsers, mockMeetings } from '@/data/mockData'
-import type { Meeting } from '@/data/mockData'
+import { mockMeetings } from '@/data/mockData'
 import { useMeetingStore } from '@/stores/meetingStore'
+import { scheduleEndReminder } from '@/utils/meetingReminder'
 
 /* ---------- Types & Constants ---------- */
 
@@ -292,12 +293,12 @@ function StepBasicInfo({ form, onChange }: { form: FormData; onChange: (patch: P
 /*  Step 2 – 参会人与角色管理                                                    */
 /* ======================================================================== */
 
-function StepAttendees({ form, onChange }: { form: FormData; onChange: (patch: Partial<FormData>) => void }) {
+function StepAttendees({ form, onChange, users }: { form: FormData; onChange: (patch: Partial<FormData>) => void; users: { id: string; name: string; email: string }[] }) {
   const [searchQuery, setSearchQuery] = useState('')
 
   const filteredUsers = useMemo(() =>
-    mockUsers.filter((u) => u.name.includes(searchQuery) || u.email.includes(searchQuery)),
-    [searchQuery],
+    users.filter((u) => u.name.includes(searchQuery) || u.email.includes(searchQuery)),
+    [users, searchQuery],
   )
 
   const attendeeMap = useMemo(() => {
@@ -348,7 +349,7 @@ function StepAttendees({ form, onChange }: { form: FormData; onChange: (patch: P
         <div className="space-y-2">
           <label className="text-xs font-medium text-[var(--text-secondary)]">已选参会人</label>
           {form.attendees.map((att) => {
-            const user = mockUsers.find((u) => u.id === att.userId)
+            const user = users.find((u) => u.id === att.userId)
             if (!user) return null
             return (
               <div key={att.userId} className="flex flex-wrap items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border-color)] bg-[var(--bg-card)] p-3">
@@ -430,6 +431,7 @@ function StepAgenda({ form, onChange }: { form: FormData; onChange: (patch: Part
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [dragOver, setDragOver] = useState(false)
   const [newAgendaTitle, setNewAgendaTitle] = useState('')
+  const [draftDuration, setDraftDuration] = useState<Record<string, string>>({})
 
   const addAgendaItem = () => {
     if (!newAgendaTitle.trim()) return
@@ -498,8 +500,24 @@ function StepAgenda({ form, onChange }: { form: FormData; onChange: (patch: Part
               <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--color-primary)]/10 text-[10px] font-bold text-[var(--color-primary)]">{idx + 1}</span>
               <span className="flex-1 text-sm text-[var(--text-primary)] truncate">{item.title}</span>
               <div className="flex items-center gap-1 shrink-0">
-                <input type="number" value={item.duration}
-                  onChange={(e) => updateAgendaDuration(item.id, parseInt(e.target.value) || 1)}
+                <input type="number"
+                  value={draftDuration[item.id] ?? item.duration}
+                  onChange={(e) => {
+                    setDraftDuration((prev) => ({ ...prev, [item.id]: e.target.value }))
+                  }}
+                  onBlur={() => {
+                    const raw = draftDuration[item.id]
+                    if (raw !== undefined) {
+                      const num = parseInt(raw)
+                      if (!isNaN(num) && num >= 1) updateAgendaDuration(item.id, num)
+                      else updateAgendaDuration(item.id, 1)
+                    }
+                    setDraftDuration((prev) => {
+                      const next = { ...prev }
+                      delete next[item.id]
+                      return next
+                    })
+                  }}
                   className="w-14 rounded-[var(--radius-sm)] border border-[var(--border-color)] bg-[var(--bg-primary)] px-2 py-1 text-xs text-center text-[var(--text-primary)] outline-none" min={1} />
                 <span className="text-xs text-[var(--text-muted)]">分钟</span>
               </div>
@@ -620,12 +638,12 @@ function StepAgenda({ form, onChange }: { form: FormData; onChange: (patch: Part
 /*  Step 4 – AI 与权限                                                         */
 /* ======================================================================== */
 
-function StepAIAndPermissions({ form, onChange }: { form: FormData; onChange: (patch: Partial<FormData>) => void }) {
+function StepAIAndPermissions({ form, onChange, users }: { form: FormData; onChange: (patch: Partial<FormData>) => void; users: { id: string; name: string; email: string }[] }) {
   const [collabSearch, setCollabSearch] = useState('')
 
   const filteredCollabUsers = useMemo(() =>
-    mockUsers.filter((u) => !form.collaborators.includes(u.id) && (u.name.includes(collabSearch) || u.email.includes(collabSearch))),
-    [collabSearch, form.collaborators],
+    users.filter((u) => !form.collaborators.includes(u.id) && (u.name.includes(collabSearch) || u.email.includes(collabSearch))),
+    [users, collabSearch, form.collaborators],
   )
 
   return (
@@ -775,7 +793,7 @@ function StepAIAndPermissions({ form, onChange }: { form: FormData; onChange: (p
         {form.collaborators.length > 0 && (
           <div className="mb-3 flex flex-wrap gap-2">
             {form.collaborators.map((uid) => {
-              const u = mockUsers.find((x) => x.id === uid)
+              const u = users.find((x) => x.id === uid)
               if (!u) return null
               return (
                 <span key={uid} className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-color)] bg-[var(--bg-card)] pl-1.5 pr-1 py-0.5 text-sm shadow-sm">
@@ -790,7 +808,7 @@ function StepAIAndPermissions({ form, onChange }: { form: FormData; onChange: (p
         )}
         <div className="max-h-40 space-y-1 overflow-y-auto rounded-[var(--radius-sm)] border border-[var(--border-color)] bg-[var(--bg-card)] p-1">
           {filteredCollabUsers.length === 0 ? (
-            <div className="py-4 text-center text-sm text-[var(--text-muted)]">已邀请所有成员</div>
+            <div className="py-4 text-center text-sm text-[var(--text-muted)]">{users.length === 0 ? '暂无可用成员' : '已邀请所有成员'}</div>
           ) : (
             filteredCollabUsers.map((u) => (
               <div key={u.id} className="flex items-center justify-between rounded-[var(--radius-sm)] px-3 py-2 hover:bg-slate-50 dark:hover:bg-slate-800/50">
@@ -814,11 +832,19 @@ function StepAIAndPermissions({ form, onChange }: { form: FormData; onChange: (p
 
 export default function CreateMeeting() {
   const navigate = useNavigate()
-  const addMeeting = useMeetingStore((s) => s.addMeeting)
+  const createMeeting = useMeetingStore((s) => s.createMeeting)
   const [currentStep, setCurrentStep] = useState<StepId>(1)
+  const [isCreating, setIsCreating] = useState(false)
   const [direction, setDirection] = useState(1)
   const [form, setForm] = useState<FormData>(INITIAL_FORM)
   const [showSuccess, setShowSuccess] = useState(false)
+  const [realUsers, setRealUsers] = useState<{ id: string; name: string; email: string }[]>([])
+
+  useEffect(() => {
+    apiFetch<{ id: string; name: string; email: string }[]>('/auth/users')
+      .then(setRealUsers)
+      .catch(() => { /* 静默失败，列表保持空 */ })
+  }, [])
 
   const updateForm = (patch: Partial<FormData>) => setForm((prev) => ({ ...prev, ...patch }))
 
@@ -838,26 +864,43 @@ export default function CreateMeeting() {
     return meetingDate <= now
   }, [form.date, form.startTime])
 
-  const handleCreate = (mode: 'instant' | 'schedule') => {
-    const meetingId = genId()
-    const meeting: Meeting = {
-      id: meetingId,
-      title: form.title || '未命名会议',
-      startTime: form.date && form.startTime ? new Date(`${form.date}T${form.startTime}`).toISOString() : new Date().toISOString(),
-      endTime: form.date && form.endTime ? new Date(`${form.date}T${form.endTime}`).toISOString() : new Date().toISOString(),
-      duration: 0,
-      status: mode === 'instant' ? 'ongoing' : 'scheduled',
-      attendees: form.attendees.map((a) => a.userId),
-      summary: '',
-      tags: [],
-      actionItems: [],
-      mood: 0,
-    }
-    addMeeting(meeting)
-    if (mode === 'instant') {
-      navigate(`/meeting/${meetingId}`)
-    } else {
-      navigate('/meetings')
+  const handleCreate = async (mode: 'instant' | 'schedule') => {
+    if (isCreating) return
+    setIsCreating(true)
+    try {
+      // 清洗表单数据：去掉 undefined / null / 空字符串字段
+      const cleanedData: Record<string, unknown> = {}
+      const raw: Record<string, unknown> = {
+        title: form.title || '未命名会议',
+        date: form.date,
+        startTime: form.startTime,
+        endTime: form.endTime,
+        agenda: form.agenda.length > 0 ? form.agenda : undefined,
+        participants: form.attendees.length > 0 ? form.attendees : undefined,
+        status: mode === 'instant' ? 'ongoing' : 'scheduled',
+      }
+      Object.entries(raw).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') {
+          cleanedData[key] = value
+        }
+      })
+      // 确保 status 始终存在且为后端可识别的值
+      cleanedData.status = mode === 'instant' ? 'ongoing' : 'scheduled'
+
+      const meeting = await createMeeting(cleanedData)
+      
+      if (meeting.endTime) {
+        scheduleEndReminder(meeting.id, meeting.endTime, meeting.title)
+      }
+      
+      if (mode === 'instant') {
+        navigate(`/meeting/${meeting.id}/room`)
+      } else {
+        navigate('/')
+      }
+    } catch (e) {
+      console.error('创建会议失败:', e)
+      setIsCreating(false)
     }
   }
 
@@ -937,9 +980,9 @@ export default function CreateMeeting() {
           <motion.div key={currentStep} custom={direction} variants={variants} initial="enter" animate="center" exit="exit"
             transition={{ type: 'spring', damping: 28, stiffness: 260 }}>
             {currentStep === 1 && <StepBasicInfo form={form} onChange={updateForm} />}
-            {currentStep === 2 && <StepAttendees form={form} onChange={updateForm} />}
+            {currentStep === 2 && <StepAttendees form={form} onChange={updateForm} users={realUsers} />}
             {currentStep === 3 && <StepAgenda form={form} onChange={updateForm} />}
-            {currentStep === 4 && <StepAIAndPermissions form={form} onChange={updateForm} />}
+            {currentStep === 4 && <StepAIAndPermissions form={form} onChange={updateForm} users={realUsers} />}
           </motion.div>
         </AnimatePresence>
       </div>
@@ -955,8 +998,8 @@ export default function CreateMeeting() {
         </div>
         {currentStep === 4 ? (
           <div className="flex gap-3">
-            <Button variant="secondary" size="md" onClick={() => handleCreate('schedule')} icon={<Calendar className="h-4 w-4" />}>预约</Button>
-            <Button variant="primary" size="md" onClick={() => handleCreate('instant')} icon={<Video className="h-4 w-4" />}>
+            <Button variant="secondary" size="md" disabled={isCreating} onClick={() => handleCreate('schedule')} icon={<Calendar className="h-4 w-4" />}>预约</Button>
+            <Button variant="primary" size="md" disabled={isCreating} onClick={() => handleCreate('instant')} icon={<Video className="h-4 w-4" />}>
               {isInstant ? '现在开始' : '创建并开始'}
             </Button>
           </div>

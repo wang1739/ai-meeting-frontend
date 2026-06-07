@@ -1,4 +1,4 @@
-import { useState, useMemo, forwardRef } from 'react';
+import { useState, useMemo, useCallback, forwardRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -13,12 +13,15 @@ import {
   Activity,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { getGreeting, mockMeetings, mockActionItems, mockUsers } from '@/data/mockData';
+import { formatTime, isSameDay, isThisWeek, formatDuration } from '@/utils/date';
+import { apiFetch } from '@/lib/api';
+import { getGreeting, mockActionItems, mockUsers } from '@/data/mockData';
 import { useMeetingStore } from '@/stores/meetingStore';
-import type { ActionItem } from '@/data/mockData';
+import { useAuthStore } from '@/stores/authStore';
+import type { ActionItem, Meeting } from '@/data/mockData';
 import Card from '@/components/ui/Card';
-import Badge from '@/components/ui/Badge';
 import Button from '@/components/ui/Button';
+import Badge from '@/components/ui/Badge';
 import Avatar from '@/components/ui/Avatar';
 import AvatarGroup from '@/components/ui/AvatarGroup';
 import Tabs from '@/components/ui/Tabs';
@@ -28,40 +31,14 @@ import EmptyState from '@/components/ui/EmptyState';
 // Helpers
 // ---------------------------------------------------------------------------
 
-const currentUser = mockUsers[0]; // 张明
-
-function isSameDay(a: Date, b: Date) {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
-}
-
-function isThisWeek(date: Date) {
-  const now = new Date();
-  const weekStart = new Date(now);
-  weekStart.setDate(now.getDate() - now.getDay()); // Sunday as week start
-  weekStart.setHours(0, 0, 0, 0);
-  const weekEnd = new Date(weekStart);
-  weekEnd.setDate(weekStart.getDate() + 7);
-  return date >= weekStart && date < weekEnd;
-}
-
-function formatTime(iso: string) {
-  return new Date(iso).toLocaleTimeString('zh-CN', {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
-}
+const currentUser = useAuthStore.getState().userInfo || { id: '', name: '用户', email: '' };
 
 function getUserById(id: string) {
   return mockUsers.find((u) => u.id === id) ?? mockUsers[0];
 }
 
 function getMeetingTitleById(id: string) {
-  return mockMeetings.find((m) => m.id === id)?.title ?? '';
+  return ''; // 后续从 store 中查找
 }
 
 function getStatusBadgeVariant(status: ActionItem['status']) {
@@ -261,31 +238,92 @@ const ActionItemCard = forwardRef<HTMLDivElement, {
 export default function Dashboard() {
   const navigate = useNavigate();
   const meetings = useMeetingStore((s) => s.meetings);
+  const fetchMeetings = useMeetingStore((s) => s.fetchMeetings);
+  const addMeeting = useMeetingStore((s) => s.addMeeting);
+
+  // 进入页面时拉取最新会议数据
+  useEffect(() => {
+    fetchMeetings();
+  }, [fetchMeetings]);
 
   // Action item filter state
   const [activeActionTab, setActiveActionTab] = useState('all');
   const [checkedItems, setCheckedItems] = useState<Record<string, boolean>>({});
+  // 从 API 获取的真实待办数
+  const [pendingActionCount, setPendingActionCount] = useState<number | null>(null);
+  // 统计数据
+  const [stats, setStats] = useState<{ todayCount: number; weekTotalHours: string } | null>(null);
+  // 当前登录用户（响应式）
+  const authUser = useAuthStore((s) => s.userInfo);
+  const displayName = authUser?.name || '用户';
+
+  // 进入页面时获取统计数据
+  useEffect(() => {
+    const fetchStats = async () => {
+      try {
+        const result = await apiFetch('/meetings/stats');
+        setStats(result);
+      } catch {
+        setStats({ todayCount: 0, weekTotalHours: '0.0' });
+      }
+    };
+    fetchStats();
+  }, []);
+
+  // 进入页面时拉取所有会议的行动项数量
+  useEffect(() => {
+    const fetchActionItemsCount = async () => {
+      try {
+        const result = await apiFetch('/meetings/action-items/stats');
+        setPendingActionCount(result.totalCount);
+      } catch {
+        setPendingActionCount(0);
+      }
+    };
+    fetchActionItemsCount();
+  }, []);
+
+  // -----------------------------------------------------------------------
+  // 即时会议：一键创建并进入会议室
+  // -----------------------------------------------------------------------
+
+  const handleInstantMeeting = useCallback(async () => {
+    try {
+      // 通过 API 创建即时会议
+      const meeting = await useMeetingStore.getState().createMeeting({
+        title: `即时会议`,
+        startTime: new Date().toISOString(),
+      });
+      navigate(`/meeting/${meeting.id}/room`);
+    } catch {
+      // 降级：本地创建
+      const now = new Date();
+      const meeting: Meeting = {
+        id: `meeting-${Date.now()}`,
+        title: `即时会议 ${now.toLocaleTimeString('zh-CN', { hour: 'numeric', minute: 'numeric' })}`,
+        startTime: now.toISOString(),
+        endTime: now.toISOString(),
+        duration: 0,
+        status: 'ongoing',
+        attendees: [mockUsers[0].id],
+        summary: '',
+        tags: [],
+        actionItems: [],
+        mood: 0,
+      };
+      addMeeting(meeting);
+      navigate(`/meeting/${meeting.id}/room`);
+    }
+  }, [addMeeting, navigate]);
 
   // -----------------------------------------------------------------------
   // Computed stats
   // -----------------------------------------------------------------------
 
-  const todayCount = useMemo(() => {
-    const today = new Date();
-    return meetings.filter((m) => isSameDay(new Date(m.startTime), today)).length;
-  }, [meetings]);
+  const todayCount = stats?.todayCount ?? 0;
+  const weekHours = stats?.weekTotalHours ?? '--';
 
-  const weekHours = useMemo(() => {
-    const totalMinutes = meetings
-      .filter((m) => isThisWeek(new Date(m.startTime)))
-      .reduce((sum, m) => sum + m.duration, 0);
-    return (totalMinutes / 60).toFixed(1);
-  }, [meetings]);
-
-  const pendingActionCount = useMemo(
-    () => mockActionItems.filter((a) => a.status !== 'done').length,
-    [],
-  );
+  const pendingActionDisplay = pendingActionCount !== null ? pendingActionCount : '--';
 
   // -----------------------------------------------------------------------
   // Upcoming meetings (ongoing + scheduled, sorted)
@@ -347,8 +385,8 @@ export default function Dashboard() {
   const statCards = [
     { icon: Calendar, label: '今日会议数', value: todayCount, color: '#4F46E5', bg: 'bg-indigo-100 dark:bg-indigo-900/30' },
     { icon: Clock, label: '本周总时长', value: `${weekHours}h`, color: '#10B981', bg: 'bg-emerald-100 dark:bg-emerald-900/30' },
-    { icon: CheckSquare, label: '待办行动项', value: pendingActionCount, color: '#F59E0B', bg: 'bg-amber-100 dark:bg-amber-900/30' },
-    { icon: BarChart3, label: '发言活跃度', value: '87%', color: '#3B82F6', bg: 'bg-blue-100 dark:bg-blue-900/30' },
+    { icon: CheckSquare, label: '待办行动项', value: pendingActionDisplay, color: '#F59E0B', bg: 'bg-amber-100 dark:bg-amber-900/30' },
+    { icon: BarChart3, label: '发言活跃度', value: '--', color: '#3B82F6', bg: 'bg-blue-100 dark:bg-blue-900/30' },
   ];
 
   return (
@@ -369,7 +407,7 @@ export default function Dashboard() {
       >
         <motion.div variants={itemVariants}>
           <h1 className="text-2xl font-bold text-[var(--text-primary)]">
-            {getGreeting()}，{currentUser.name}
+            {getGreeting()}，{displayName}
             <span className="ml-2 inline-block animate-pulse">👋</span>
           </h1>
           <p className="mt-1 text-sm text-[var(--text-secondary)]">
@@ -382,7 +420,7 @@ export default function Dashboard() {
             variant="primary"
             size="md"
             icon={<Zap className="h-4 w-4" />}
-            onClick={() => navigate('/meeting/demo')}
+            onClick={handleInstantMeeting}
           >
             即时会议
           </Button>
@@ -474,7 +512,7 @@ export default function Dashboard() {
                         {timeStr}
                       </span>
                       <span className="mt-0.5 text-[10px] text-[var(--text-muted)]">
-                        {meeting.duration}min
+                        {formatDuration(meeting.duration)}
                       </span>
                     </div>
 
@@ -508,6 +546,25 @@ export default function Dashboard() {
                           <span className="text-xs text-[var(--text-muted)]">
                             {attendeeUsers.length} 人参与
                           </span>
+                          <div className="ml-auto">
+                            {meeting.status === 'ongoing' ? (
+                              <Button
+                                variant="primary"
+                                size="sm"
+                                onClick={() => navigate(`/meeting/${meeting.id}/room`)}
+                              >
+                                加入
+                              </Button>
+                            ) : (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => navigate(`/meeting/${meeting.id}/room`)}
+                              >
+                                待开始
+                              </Button>
+                            )}
+                          </div>
                         </div>
                       </Card>
 

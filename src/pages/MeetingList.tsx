@@ -1,9 +1,8 @@
-import { useMemo, useCallback } from 'react';
-import { cn } from '@/lib/utils';
+import { useState, useMemo, useCallback, useEffect } from 'react';
+import { cn } from '@/lib/utils'
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate, Link } from 'react-router-dom';
 import { useMeetingStore } from '@/stores/meetingStore';
-import { mockUsers, mockActionItems } from '@/data/mockData';
 import Button from '@/components/ui/Button';
 import Badge from '@/components/ui/Badge';
 import AvatarGroup from '@/components/ui/AvatarGroup';
@@ -17,7 +16,55 @@ import {
   Circle,
   Calendar,
   Plus,
+  Trash2,
+  Check,
 } from 'lucide-react';
+
+interface DeleteConfirmDialogProps {
+  isOpen: boolean;
+  title: string;
+  message: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}
+
+function DeleteConfirmDialog({ isOpen, title, message, onConfirm, onCancel }: DeleteConfirmDialogProps) {
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm"
+          onClick={onCancel}
+        >
+          <motion.div
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.9, opacity: 0 }}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-[12px] bg-[var(--bg-card)] p-6 shadow-xl"
+          >
+            <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-red-100 text-red-500">
+              <Trash2 className="h-6 w-6" />
+            </div>
+            <h3 className="text-lg font-semibold text-[var(--text-primary)]">{title}</h3>
+            <p className="mt-2 text-sm text-[var(--text-secondary)]">{message}</p>
+            <div className="mt-6 flex justify-end gap-3">
+              <Button variant="ghost" size="sm" onClick={onCancel}>
+                取消
+              </Button>
+              <Button variant="danger" size="sm" onClick={onConfirm}>
+                确认删除
+              </Button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
 
 /* ── Status configuration ── */
 
@@ -42,33 +89,43 @@ const statusConfig = {
     badgeVariant: 'default' as const,
     borderColor: '#94A3B8' as const,
   },
+  ended: {
+    label: '已结束',
+    badgeVariant: 'default' as const,
+    borderColor: '#6B7280' as const,
+  },
 };
 
 /* ── Helpers ── */
 
+function safeParse(iso: string | null | undefined): Date | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? null : d;
+}
+
 function formatTime(dateStr: string): string {
-  const d = new Date(dateStr);
+  const d = safeParse(dateStr);
+  if (!d) return '--:--';
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 function formatDate(dateStr: string): string {
-  const d = new Date(dateStr);
+  const d = safeParse(dateStr);
+  if (!d) return '时间待定';
   return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
 }
 
 function formatDuration(minutes: number): string {
+  if (!minutes || minutes <= 0) return '--';
   if (minutes < 60) return `${minutes}分钟`;
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
   return m > 0 ? `${h}小时${m}分钟` : `${h}小时`;
 }
 
-function getUserName(userId: string): string {
-  return mockUsers.find((u) => u.id === userId)?.name ?? userId;
-}
-
 function getAvatarGroupUsers(ids: string[]) {
-  return ids.map((id) => ({ name: getUserName(id) }));
+  return ids.map((id) => ({ name: id === 'current' ? '我' : '成员' }));
 }
 
 /* ── Animation variants ── */
@@ -94,9 +151,23 @@ const itemVariants = {
 
 export default function MeetingList() {
   const navigate = useNavigate();
+  const [pageNum, setPageNum] = useState(1);
+  const [deleteDialog, setDeleteDialog] = useState<{
+    isOpen: boolean;
+    ids: string[];
+    title: string;
+    message: string;
+  }>({
+    isOpen: false,
+    ids: [],
+    title: '',
+    message: '',
+  });
+  const [showSuccessToast, setShowSuccessToast] = useState(false);
 
   const {
     meetings,
+    isLoading,
     filters,
     setFilters,
     viewMode,
@@ -106,9 +177,51 @@ export default function MeetingList() {
     selectAll,
     clearSelection,
     getFilteredMeetings,
+    fetchMeetings,
+    deleteMeeting,
   } = useMeetingStore();
 
-  const filteredMeetings = useMemo(() => getFilteredMeetings(), [getFilteredMeetings]);
+  // 进入页面自动获取会议列表
+  useEffect(() => {
+    fetchMeetings();
+  }, [fetchMeetings]);
+
+  /** 查询函数：重置页码为1，携带筛选参数刷新会议列表 */
+  /** 对接后端语义：keyword=filters.search / status=filters.status / dateType=filters.dateRange / pageNum=1 */
+  const getMeetingList = useCallback(() => {
+    setPageNum(1);
+    return getFilteredMeetings();
+  }, [getFilteredMeetings]);
+
+  /** 筛选条件变更 → 立即重新查询 */
+  const handleStatusChange = useCallback(
+    (e: React.ChangeEvent<HTMLSelectElement>) => {
+      setFilters({ status: e.target.value });
+      getMeetingList();
+    },
+    [setFilters, getMeetingList],
+  );
+
+  const handleDateChange = useCallback(
+    (e: React.ChangeEvent<HTMLSelectElement>) => {
+      setFilters({ dateRange: e.target.value });
+      getMeetingList();
+    },
+    [setFilters, getMeetingList],
+  );
+
+  /** 搜索回车触发查询 */
+  const handleSearchKeyUp = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === 'Enter') {
+        getMeetingList();
+      }
+    },
+    [getMeetingList],
+  );
+
+  /** 筛选后的会议列表（每次 meetings / filters 变化时重新计算） */
+  const filteredMeetings = useMemo(() => getFilteredMeetings(), [meetings, filters]);
 
   const allSelected = meetings.length > 0 && selectedIds.length === meetings.length;
 
@@ -120,12 +233,38 @@ export default function MeetingList() {
     }
   }, [allSelected, clearSelection, selectAll]);
 
+  const openDeleteDialog = useCallback((ids: string[], title: string, message: string) => {
+    setDeleteDialog({ isOpen: true, ids, title, message });
+  }, []);
+
+  const closeDeleteDialog = useCallback(() => {
+    setDeleteDialog({ isOpen: false, ids: [], title: '', message: '' });
+  }, []);
+
+  const handleDeleteSingle = useCallback(async (id: string, title: string) => {
+    openDeleteDialog([id], '删除会议', `确定要删除会议"${title}"吗？`);
+  }, [openDeleteDialog]);
+
+  const handleDeleteBulk = useCallback(() => {
+    openDeleteDialog(selectedIds, '批量删除会议', `确定要删除选中的 ${selectedIds.length} 个会议吗？`);
+  }, [selectedIds, openDeleteDialog]);
+
+  const handleConfirmDelete = useCallback(async () => {
+    try {
+      for (const id of deleteDialog.ids) {
+        await deleteMeeting(id);
+      }
+      setShowSuccessToast(true);
+      setTimeout(() => setShowSuccessToast(false), 3000);
+    } catch (error) {
+      console.error('删除失败:', error);
+    }
+    closeDeleteDialog();
+  }, [deleteDialog.ids, deleteMeeting, closeDeleteDialog]);
+
   /* Action items count per meeting */
   const actionItemsCountMap = useMemo(() => {
     const counts: Record<string, number> = {};
-    mockActionItems.forEach((item) => {
-      counts[item.meetingId] = (counts[item.meetingId] || 0) + 1;
-    });
     return counts;
   }, []);
 
@@ -147,6 +286,7 @@ export default function MeetingList() {
           <SearchInput
             value={filters.search}
             onChange={(e) => setFilters({ search: e.target.value })}
+            onKeyUp={handleSearchKeyUp}
             placeholder="搜索会议标题或摘要…"
           />
         </div>
@@ -189,7 +329,7 @@ export default function MeetingList() {
         <div className="flex items-center gap-3">
           <select
             value={filters.status}
-            onChange={(e) => setFilters({ status: e.target.value })}
+            onChange={handleStatusChange}
             className="h-9 rounded-[8px] border border-[var(--border-color)] bg-[var(--bg-card)] px-3 text-sm text-[var(--text-primary)] outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/20"
           >
             <option value="">全部状态</option>
@@ -200,7 +340,7 @@ export default function MeetingList() {
 
           <select
             value={filters.dateRange}
-            onChange={(e) => setFilters({ dateRange: e.target.value })}
+            onChange={handleDateChange}
             className="h-9 rounded-[8px] border border-[var(--border-color)] bg-[var(--bg-card)] px-3 text-sm text-[var(--text-primary)] outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/20"
           >
             <option value="">全部时间</option>
@@ -220,11 +360,19 @@ export default function MeetingList() {
       </div>
 
       {/* ── Content ── */}
-      {filteredMeetings.length === 0 ? (
+      {isLoading ? (
+        <div className="flex items-center justify-center py-20">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-[var(--border-color)] border-t-[var(--color-primary)]" />
+        </div>
+      ) : filteredMeetings.length === 0 ? (
         <EmptyState
           icon={Calendar}
-          title="没有找到会议"
-          description="试试调整筛选条件"
+          title={meetings.length === 0 ? '暂无会议' : '没有找到会议'}
+          description={meetings.length === 0 ? '去创建一个吧' : '试试调整筛选条件'}
+          action={{
+            label: '新建会议',
+            onClick: () => navigate('/meetings/new'),
+          }}
         />
       ) : viewMode === 'list' ? (
         /* ═══ List view ═══ */
@@ -250,7 +398,7 @@ export default function MeetingList() {
 
           {filteredMeetings.map((meeting) => {
             const isSelected = selectedIds.includes(meeting.id);
-            const config = statusConfig[meeting.status];
+            const config = statusConfig[meeting.status] || statusConfig.completed;
             return (
               <motion.div
                 key={meeting.id}
@@ -279,7 +427,7 @@ export default function MeetingList() {
                   {/* Title + meta + summary */}
                   <div className="min-w-0 flex-1">
                     <Link
-                      to={`/meetings/${meeting.id}`}
+                      to={`/meeting/${meeting.id}/review`}
                       className="text-sm font-semibold text-[var(--text-primary)] transition-colors hover:text-[var(--color-primary)]"
                     >
                       {meeting.title}
@@ -311,6 +459,15 @@ export default function MeetingList() {
                   <Badge variant={config.badgeVariant} size="sm">
                     {config.label}
                   </Badge>
+
+                  {/* Delete button */}
+                  <button
+                    onClick={() => handleDeleteSingle(meeting.id, meeting.title)}
+                    className="ml-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--text-muted)] transition-colors hover:bg-red-50 hover:text-red-500"
+                    title="删除会议"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
                 </div>
               </motion.div>
             );
@@ -359,7 +516,7 @@ export default function MeetingList() {
 
                 {/* Title */}
                 <Link
-                  to={`/meetings/${meeting.id}`}
+                  to={`/meeting/${meeting.id}/review`}
                   className="mt-1 block text-sm font-semibold text-[var(--text-primary)] transition-colors hover:text-[var(--color-primary)]"
                 >
                   {meeting.title}
@@ -394,11 +551,20 @@ export default function MeetingList() {
                   <Badge variant={config.badgeVariant} size="sm">
                     {config.label}
                   </Badge>
-                  {actionCount > 0 && (
-                    <Badge variant="warning" size="sm">
-                      {actionCount} 项待办
-                    </Badge>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {actionCount > 0 && (
+                      <Badge variant="warning" size="sm">
+                        {actionCount} 项待办
+                      </Badge>
+                    )}
+                    <button
+                      onClick={() => handleDeleteSingle(meeting.id, meeting.title)}
+                      className="flex h-7 w-7 items-center justify-center rounded-full text-[var(--text-muted)] transition-colors hover:bg-red-50 hover:text-red-500"
+                      title="删除会议"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </div>
               </motion.div>
             );
@@ -429,11 +595,35 @@ export default function MeetingList() {
                 <Button variant="ghost" size="sm" onClick={() => {}}>
                   导出
                 </Button>
-                <Button variant="danger" size="sm" onClick={() => {}}>
-                  删除
-                </Button>
+                <Button variant="danger" size="sm" onClick={handleDeleteBulk}>
+                删除
+              </Button>
               </div>
             </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Delete confirmation dialog */}
+      <DeleteConfirmDialog
+        isOpen={deleteDialog.isOpen}
+        title={deleteDialog.title}
+        message={deleteDialog.message}
+        onConfirm={handleConfirmDelete}
+        onCancel={closeDeleteDialog}
+      />
+
+      {/* Success toast */}
+      <AnimatePresence>
+        {showSuccessToast && (
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="fixed top-4 right-4 z-[100] flex items-center gap-2 rounded-lg bg-[var(--color-success)] px-4 py-3 text-white shadow-lg"
+          >
+            <Check className="h-5 w-5" />
+            <span className="text-sm font-medium">删除成功</span>
           </motion.div>
         )}
       </AnimatePresence>

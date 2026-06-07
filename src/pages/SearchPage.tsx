@@ -296,7 +296,7 @@ export default function SearchPage({ isOpen = true, onClose = () => {} }: Search
                                 {meeting.title}
                               </p>
                               <p className="mt-0.5 text-xs text-[var(--text-muted)]">
-                                {new Date(meeting.startTime).toLocaleDateString('zh-CN')}
+                                {(() => { try { const d = new Date(meeting.startTime); return isNaN(d.getTime()) ? '时间待定' : d.toLocaleDateString('zh-CN'); } catch { return '时间待定'; } })()}
                               </p>
                             </div>
                             <Badge

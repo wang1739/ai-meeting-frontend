@@ -4,6 +4,17 @@
 @tailwind components;
 @tailwind utilities;
 
+html {
+  font-size: 18px;
+}
+
+@media screen and (max-width: 1440px) {
+  html { font-size: 17px; }
+}
+@media screen and (min-width: 1920px) {
+  html { font-size: 19px; }
+}
+
 :root {
   --color-primary: #4F46E5;
   --color-primary-light: #6366F1;

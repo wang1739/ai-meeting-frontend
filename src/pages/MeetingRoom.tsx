@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useMeetingStore } from '@/stores/meetingStore'
+import { useAuthStore } from '@/stores/authStore'
 import { motion, AnimatePresence } from 'framer-motion'
 import { cn } from '@/lib/utils'
 import Button from '@/components/ui/Button'
@@ -8,28 +9,14 @@ import Avatar from '@/components/ui/Avatar'
 import Badge from '@/components/ui/Badge'
 import Modal from '@/components/ui/Modal'
 import { mockMeetings, mockUsers, type TranscriptEntry, type User } from '@/data/mockData'
+import { cancelReminder } from '@/utils/meetingReminder'
+import { apiFetch } from '@/lib/api'
 import {
   Mic, MicOff, Video, VideoOff, MessageSquare, Share2, LogOut,
   Circle, Clock, Bot, Sparkles, Bookmark, ChevronRight, ChevronLeft,
   PanelRightClose, PanelRightOpen, Download, FileText, PenLine,
   PictureInPicture, Radio, Wifi, Activity, Smile, Volume2,
 } from 'lucide-react'
-
-/* ──────────── Mock phrases for simulated transcript ──────────── */
-const mockPhrases = [
-  '关于这个产品路线图，我认为Q2的重点应该放在用户体验优化上。',
-  'AI模块的开发进度如何？我们需要在6月底前完成第一版。',
-  '用户反馈显示，新功能的使用率比预期高了30%。',
-  '我建议把这个功能拆分成两个迭代来开发，先做核心流程。',
-  '资源分配方面，前端团队目前还有余力承接新的需求。',
-  '这个方案的风险点主要在于第三方依赖的稳定性。',
-  '好的，那我们先把这些问题记录下来，会后跟进处理。',
-  '从数据来看，用户的留存率有明显的提升趋势，这是个好信号。',
-  '我补充一点，竞品分析报告显示他们在AI功能上投入很大。',
-  '测试环境的问题需要运维团队配合来解决，明天对齐一下。',
-  '产品路线图的优先级排序还需要和业务方再确认一下。',
-  '这次的用户访谈反馈很积极，大家对AI功能期待很高。',
-]
 
 const mockAiResponses = [
   '根据会议内容，我建议将"用户体验优化"列为Q2最高优先级。',
@@ -45,8 +32,6 @@ const mockNotifications = [
   '检测到关键决策点：路线图优先级调整',
 ]
 
-const speakerIds = ['u1', 'u2', 'u3', 'u4', 'u5', 'u6']
-
 /* ──────────── Helper: highlight keywords ──────────── */
 function highlightKeywords(text: string): React.ReactNode[] {
   const keywords = ['路线图', 'AI', '产品', '用户']
@@ -57,11 +42,6 @@ function highlightKeywords(text: string): React.ReactNode[] {
       ? <span key={i} className="bg-yellow-200/60 dark:bg-yellow-500/20 text-yellow-800 dark:text-yellow-200 px-0.5 rounded font-medium">{part}</span>
       : part,
   )
-}
-
-/* ──────────── Helper: get user by id ──────────── */
-function getUserColor(id: string): string {
-  return mockUsers.find((u) => u.id === id)?.color ?? '#94A3B8'
 }
 
 /* ──────────── Sub: VU Meter ──────────── */
@@ -88,9 +68,7 @@ const VUMeter: React.FC = () => {
 }
 
 /* ──────────── Sub: Voice-wave avatar ──────────── */
-const VoiceAvatar: React.FC<{ userId: string }> = ({ userId }) => {
-  const user = mockUsers.find((u) => u.id === userId)
-  if (!user) return null
+const VoiceAvatar: React.FC<{ name: string }> = ({ name }) => {
   return (
     <div className="relative flex items-center justify-center">
       <motion.span
@@ -98,7 +76,7 @@ const VoiceAvatar: React.FC<{ userId: string }> = ({ userId }) => {
         animate={{ boxShadow: ['0 0 0 0 rgba(79,70,229,0.3)', '0 0 0 6px rgba(79,70,229,0)'] }}
         transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
       />
-      <Avatar name={user.name} size="sm" />
+      <Avatar name={name} size="sm" />
     </div>
   )
 }
@@ -132,8 +110,8 @@ const TranscriptBubble: React.FC<BubbleProps> = ({ entry, user, isBookmarked, on
       {/* Bubble */}
       <div className={cn('max-w-[70%]', isSelf ? 'items-end' : 'items-start')}>
         <div className="flex items-center gap-2 mb-1">
-          <span className="text-xs font-medium text-[var(--text-secondary)]">{user.name}</span>
-          <span className="text-[10px] text-[var(--text-muted)]">{time}</span>
+          <span className="text-sm font-medium text-[var(--text-secondary)]">{user.name}</span>
+          <span className="text-xs text-[var(--text-muted)]">{time}</span>
         </div>
         <div
           className={cn(
@@ -151,7 +129,7 @@ const TranscriptBubble: React.FC<BubbleProps> = ({ entry, user, isBookmarked, on
                 : 'left-[-6px] border-r-[var(--border-color)]',
             )}
           />
-          <p className="text-sm text-[var(--text-primary)] leading-relaxed">
+          <p className="text-base text-[var(--text-primary)] leading-relaxed" style={{ lineHeight: 1.6 }}>
             {highlightKeywords(entry.text)}
           </p>
           {entry.translatedText && (
@@ -408,6 +386,42 @@ const aiCommands = [
   { icon: Circle, label: '识别风险' },
 ]
 
+/* ──────────── Sub: Copy Invite Link Button ──────────── */
+function CopyInviteLinkButton({ meetingId }: { meetingId: string }) {
+  const [copied, setCopied] = useState(false)
+
+  const copyLink = useCallback(() => {
+    const link = `${window.location.origin}/meeting/${meetingId}`
+    navigator.clipboard.writeText(link).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }, [meetingId])
+
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      icon={
+        copied ? (
+          <svg className="h-4 w-4 text-[var(--color-success)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+            <path d="M20 6L9 17l-5-5" />
+          </svg>
+        ) : (
+          <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+          </svg>
+        )
+      }
+      onClick={copyLink}
+      title="复制邀请链接"
+    >
+      {copied ? '已复制' : '邀请'}
+    </Button>
+  )
+}
+
 /* ────────────────────────────────────────────────
    MAIN MEETING ROOM COMPONENT
    ──────────────────────────────────────────────── */
@@ -415,15 +429,166 @@ const MeetingRoom: React.FC = () => {
   const { meetingId } = useParams<{ meetingId: string }>()
   const navigate = useNavigate()
   const updateMeeting = useMeetingStore((s) => s.updateMeeting)
-  const meeting = mockMeetings.find((m) => m.id === meetingId) ?? mockMeetings[0]
-
+  
   /* State */
+  const [meeting, setMeeting] = useState(mockMeetings[0])
+  const [isLoading, setIsLoading] = useState(true)
   const [mode, setMode] = useState<'transcript' | 'notes' | 'whiteboard'>('transcript')
   const [leftOpen, setLeftOpen] = useState(false)
   const [rightOpen, setRightOpen] = useState(true)
 
-  // Transcript entries (live simulated)
-  const [entries, setEntries] = useState<TranscriptEntry[]>(meeting.transcript ?? [])
+  useEffect(() => {
+    const fetchMeeting = async () => {
+      if (!meetingId) return
+      try {
+        const data = await apiFetch(`/meetings/${meetingId}`)
+        setMeeting(data)
+      } catch (error) {
+        console.error('获取会议信息失败:', error)
+      } finally {
+        setIsLoading(false)
+      }
+    }
+    fetchMeeting()
+  }, [meetingId])
+
+  // ── Speech Recognition (Web Speech API) ──
+  const currentUser = useAuthStore((s) => s.userInfo)
+  const savedResultCountRef = useRef(0)
+
+  const startRecognition = useCallback(() => {
+    const SpeechRecognitionCtor = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+    if (!SpeechRecognitionCtor) {
+      setRecognitionStatus('error')
+      setMicError('当前浏览器不支持语音识别，请使用 Chrome 或 Edge')
+      return
+    }
+
+    // Stop previous instance if exists
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop() } catch { /* ignore */ }
+    }
+
+    setMicError('')
+    setRecognitionStatus('listening')
+
+    const recognition: any = new SpeechRecognitionCtor()
+    recognition.lang = 'zh-CN'
+    recognition.interimResults = true
+    recognition.continuous = true
+
+    shouldListenRef.current = true
+    savedResultCountRef.current = 0
+
+    recognition.onresult = (event: any) => {
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript
+        if (!transcript.trim()) continue
+        const isFinal = event.results[i].isFinal
+        const newEntry: TranscriptEntry = {
+          id: `speech-${Date.now()}-${i}`,
+          userId: currentUser?.id ?? 'unknown',
+          text: transcript,
+          timestamp: Math.floor(Date.now() / 1000),
+        }
+        // For interim results, replace the last non-final entry with the same id
+        // For final results, always append
+        setEntries((prev) => {
+          if (!isFinal) {
+            const withoutLastInterim = prev.filter((e) => !e.id.startsWith('interim-'))
+            return [...withoutLastInterim, { ...newEntry, id: `interim-${Date.now()}` }]
+          }
+          const withoutInterims = prev.filter((e) => !e.id.startsWith('interim-'))
+          return [...withoutInterims, newEntry]
+        })
+
+        // Save final results to backend (don't block UI)
+        if (isFinal && meetingId) {
+          if (i >= savedResultCountRef.current) {
+            savedResultCountRef.current = i + 1
+            const startTimeMs = Math.floor(Date.now() - 3000)
+            const endTimeMs = Math.floor(Date.now())
+            console.log('正在保存转写:', { text: transcript.slice(0, 40), meetingId })
+            apiFetch(`/meetings/${meetingId}/transcripts`, {
+                method: 'POST',
+                body: JSON.stringify({
+                  speakerLabel: currentUser?.name ?? 'Speaker',
+                  text: transcript,
+                  startTimeMs,
+                  endTimeMs,
+                  isFinal: true,
+                }),
+              }).then((res) => {
+                console.log('[转写保存成功]', { text: transcript.slice(0, 40), response: res })
+              }).catch((err) => {
+                console.error('保存转写失败:', err)
+              })
+          }
+        }
+      }
+    }
+
+    recognition.onerror = (event: any) => {
+      if (event.error === 'not-allowed') {
+        shouldListenRef.current = false
+        setRecognitionStatus('error')
+        setMicError('无法访问麦克风，请检查权限设置')
+      } else if (event.error === 'no-speech') {
+        // Ignore — happens when user is silent
+      } else if (event.error === 'aborted') {
+        if (shouldListenRef.current) {
+          setRecognitionStatus('listening')
+        } else {
+          setRecognitionStatus('stopped')
+        }
+      } else {
+        console.warn('Speech recognition error:', event.error)
+      }
+    }
+
+    recognition.onend = () => {
+      // Auto-restart only if shouldListenRef is still true
+      if (shouldListenRef.current) {
+        try {
+          recognition.start()
+        } catch {
+          setRecognitionStatus('error')
+          setMicError('语音识别自动重启失败，请点击"开始录音"重试')
+        }
+      } else {
+        setRecognitionStatus('stopped')
+      }
+    }
+
+    try {
+      recognition.start()
+      recognitionRef.current = recognition
+    } catch (err) {
+      shouldListenRef.current = false
+      setRecognitionStatus('error')
+      setMicError('无法启动语音识别：' + (err as Error).message)
+    }
+  }, [meetingId, currentUser])
+
+  const stopRecognition = useCallback(() => {
+    shouldListenRef.current = false
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop() } catch { /* ignore */ }
+    }
+    // Don't clear recognitionRef — let onend handle state cleanup
+  }, [])
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      shouldListenRef.current = false
+      try { recognitionRef.current?.stop() } catch { /* ignore */ }
+      recognitionRef.current = null
+    }
+  }, [])
+
+  // Transcript entries
+  const [entries, setEntries] = useState<TranscriptEntry[]>([])
   const [bookmarkedIds, setBookmarkedIds] = useState<Set<string>>(new Set())
   const transcriptRef = useRef<HTMLDivElement>(null!)
   const [translateLang, setTranslateLang] = useState('')
@@ -431,6 +596,46 @@ const MeetingRoom: React.FC = () => {
   // AI Panel chat
   const [aiMessages, setAiMessages] = useState<{ role: 'user' | 'ai'; text: string; time: string }[]>([])
   const [aiInput, setAiInput] = useState('')
+
+  // Meeting chat (right panel)
+  interface ChatMsg { id: string; userId: string; userName: string; content: string; createdAt: string }
+  const [chatMessages, setChatMessages] = useState<ChatMsg[]>([])
+  const [chatInput, setChatInput] = useState('')
+  const [rightTab, setRightTab] = useState<'ai' | 'chat'>('ai')
+  const chatListRef = useRef<HTMLDivElement>(null!)
+
+  // Load chat messages & poll every 3s
+  useEffect(() => {
+    if (!meetingId) return
+    const load = async () => {
+      try {
+        const data = await apiFetch<ChatMsg[]>(`/meetings/${meetingId}/messages`)
+        setChatMessages(data)
+      } catch { /* ignore */ }
+    }
+    load()
+    const iv = setInterval(load, 3000)
+    return () => clearInterval(iv)
+  }, [meetingId])
+
+  // Auto-scroll chat to bottom
+  useEffect(() => {
+    if (chatListRef.current) {
+      chatListRef.current.scrollTop = chatListRef.current.scrollHeight
+    }
+  }, [chatMessages])
+
+  const sendChatMessage = useCallback(async () => {
+    const text = chatInput.trim()
+    if (!text || !meetingId) return
+    setChatInput('')
+    try {
+      await apiFetch(`/meetings/${meetingId}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({ content: text }),
+      })
+    } catch { /* ignore */ }
+  }, [chatInput, meetingId])
 
   // AI notifications
   const [notifications, setNotifications] = useState<AiNotification[]>([])
@@ -446,6 +651,13 @@ const MeetingRoom: React.FC = () => {
   // Audio source
   const [audioSource, setAudioSource] = useState('microphone')
 
+  // Speech Recognition (Web Speech API)
+  type RecognitionStatus = 'idle' | 'listening' | 'stopped' | 'error'
+  const recognitionRef = useRef<any>(null)
+  const shouldListenRef = useRef(false)
+  const [recognitionStatus, setRecognitionStatus] = useState<RecognitionStatus>('idle')
+  const [micError, setMicError] = useState('')
+
   // Notes editor
   const [notesContent, setNotesContent] = useState('')
   const notesRef = useRef<HTMLDivElement>(null!)
@@ -457,22 +669,6 @@ const MeetingRoom: React.FC = () => {
     { id: 'actions', title: '行动项建议', content: '• 张明: 整理路线图优先级文档\n• 李华: AI模块可行性评估\n• 王芳: 用户反馈数据汇总' },
     { id: 'decisions', title: '决议记录', content: '• Q2主攻用户体验优化\n• AI模块6月底交付V1\n• 每周同步会改为周二' },
   ]
-
-  /* ── Live transcript simulation ── */
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const text = mockPhrases[Math.floor(Math.random() * mockPhrases.length)]
-      const userId = speakerIds[Math.floor(Math.random() * speakerIds.length)]
-      const newEntry: TranscriptEntry = {
-        id: `live-${Date.now()}`,
-        userId,
-        text,
-        timestamp: Math.floor(Date.now() / 1000),
-      }
-      setEntries((prev) => [...prev, newEntry])
-    }, 3500)
-    return () => clearInterval(interval)
-  }, [])
 
   /* ── Auto scroll transcript ── */
   useEffect(() => {
@@ -558,23 +754,86 @@ const MeetingRoom: React.FC = () => {
   /* ── Render ── */
   const transcriptContent = (
     <div className="flex flex-col h-full">
-      {/* Transcript area */}
+      {/* Status + Control bar */}
+      <div className="shrink-0 flex items-center justify-between px-6 py-2 border-b border-[var(--border-color)]">
+        <div className="flex items-center gap-2">
+          {/* Status dot */}
+          <span className="relative flex h-2.5 w-2.5">
+            {recognitionStatus === 'listening' && (
+              <>
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500" />
+              </>
+            )}
+            {recognitionStatus === 'idle' && (
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-gray-400" />
+            )}
+            {recognitionStatus === 'stopped' && (
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-yellow-500" />
+            )}
+            {recognitionStatus === 'error' && (
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500" />
+            )}
+          </span>
+          <span className="text-xs text-[var(--text-muted)]">
+            {recognitionStatus === 'idle' && '麦克风已就绪，等待开始录音'}
+            {recognitionStatus === 'listening' && '正在聆听...'}
+            {recognitionStatus === 'stopped' && '录音已停止'}
+            {recognitionStatus === 'error' && micError || '麦克风不可用'}
+          </span>
+          {micError && recognitionStatus === 'error' && (
+            <span className="text-xs text-red-500 ml-1">{micError}</span>
+          )}
+        </div>
+        <div>
+          {recognitionStatus === 'listening' ? (
+            <button
+              onClick={stopRecognition}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-red-500 text-white hover:bg-red-600 transition-colors"
+            >
+              <MicOff className="h-3.5 w-3.5" />
+              停止录音
+            </button>
+          ) : (
+            <button
+              onClick={startRecognition}
+              disabled={recognitionStatus === 'error' && micError.includes('不支持')}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-[var(--color-primary)] text-white hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Mic className="h-3.5 w-3.5" />
+              开始录音
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Transcript bubbles */}
       <div
         ref={transcriptRef}
         className="flex-1 overflow-y-auto px-6 py-4 space-y-4"
       >
-        {entries.map((entry) => {
-          const user = mockUsers.find((u) => u.id === entry.userId) ?? mockUsers[0]
-          return (
-            <TranscriptBubble
-              key={entry.id}
-              entry={entry}
-              user={user}
-              isBookmarked={bookmarkedIds.has(entry.id)}
-              onToggleBookmark={toggleBookmark}
-            />
-          )
-        })}
+        {entries.length === 0 ? (
+          <div className="flex h-full min-h-[300px] items-center justify-center">
+            <div className="text-center">
+              <MessageSquare className="mx-auto mb-3 h-10 w-10 text-[var(--text-muted)]/50" />
+              <p className="text-sm text-[var(--text-muted)]">暂无发言内容</p>
+            </div>
+          </div>
+        ) : (
+          entries.map((entry) => {
+            const isSelf = entry.userId === currentUser?.id
+            const displayName = isSelf ? (currentUser?.name ?? '我') : '参会者'
+            return (
+              <TranscriptBubble
+                key={entry.id + (entry.id.startsWith('interim-') ? '-interim' : '')}
+                entry={entry}
+                user={{ id: entry.userId, name: displayName } as any}
+                isBookmarked={bookmarkedIds.has(entry.id)}
+                onToggleBookmark={toggleBookmark}
+              />
+            )
+          })
+        )}
       </div>
       {/* Floating control bar */}
       <div className="sticky bottom-0 left-0 right-0 border-t border-[var(--border-color)] bg-[var(--bg-card)]/90 backdrop-blur-sm px-4 py-2 flex items-center gap-3">
@@ -752,14 +1011,18 @@ const MeetingRoom: React.FC = () => {
           <VUMeter />
           {/* Voice-wave avatars */}
           <div className="flex items-center -space-x-1">
-            {['u1', 'u2', 'u3', 'u4'].map((uid) => (
-              <VoiceAvatar key={uid} userId={uid} />
-            ))}
+            {(meeting as any).participants?.length > 0
+              ? (meeting as any).participants.map((p: { user: { name: string } }) => (
+                  <VoiceAvatar key={p.user.name} name={p.user.name} />
+                ))
+              : <span className="text-xs text-[var(--text-muted)] px-1">暂无参会人</span>
+            }
           </div>
         </div>
 
         {/* Right */}
         <div className="flex items-center gap-2">
+          <CopyInviteLinkButton meetingId={meetingId || meeting.id} />
           <Button variant="ghost" size="sm" icon={<Share2 className="h-4 w-4" />} title="共享屏幕" />
           <Button variant="danger" size="sm" icon={<LogOut className="h-4 w-4" />} onClick={handleEndMeeting}>
             结束会议
@@ -768,7 +1031,7 @@ const MeetingRoom: React.FC = () => {
       </header>
 
       {/* ─── Main flex layout ─── */}
-      <div className="flex-1 flex overflow-hidden" style={{ height: 'calc(100vh - 3.5rem - 2rem)' }}>
+      <div className="flex-1 flex overflow-hidden">
         {/* ─── 4. Left Toolbar ─── */}
         <AnimatePresence>
           {leftOpen && (
@@ -851,21 +1114,40 @@ const MeetingRoom: React.FC = () => {
         </button>
 
         {/* ─── 3. Right AI Panel ─── */}
-        <AnimatePresence>
-          {rightOpen && (
-            <motion.aside
-              key="right-panel"
-              initial={{ width: 0, opacity: 0 }}
-              animate={{ width: 320, opacity: 1 }}
-              exit={{ width: 0, opacity: 0 }}
-              transition={{ duration: 0.2, ease: 'easeInOut' }}
-              className="shrink-0 border-l border-[var(--border-color)] bg-[var(--bg-card)] overflow-hidden"
-            >
-              <div className="w-80 h-full flex flex-col">
+        {rightOpen && (
+          <aside className="shrink-0 w-96 border-l border-[var(--border-color)] bg-[var(--bg-card)] flex flex-col">
+            {/* Tab bar: AI 问答 / 会议聊天 */}
+            <div className="flex border-b border-[var(--border-color)] shrink-0">
+              <button
+                onClick={() => setRightTab('ai')}
+                className={cn(
+                  'flex-1 py-2.5 text-xs font-medium transition-colors',
+                  rightTab === 'ai'
+                    ? 'text-[var(--color-primary)] border-b-2 border-[var(--color-primary)]'
+                    : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]',
+                )}
+              >
+                AI 问答
+              </button>
+              <button
+                onClick={() => setRightTab('chat')}
+                className={cn(
+                  'flex-1 py-2.5 text-xs font-medium transition-colors',
+                  rightTab === 'chat'
+                    ? 'text-[var(--color-primary)] border-b-2 border-[var(--color-primary)]'
+                    : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]',
+                )}
+              >
+                会议聊天
+              </button>
+            </div>
+
+            {/* ─── AI 问答 ─── */}
+            {rightTab === 'ai' && (
+              <div className="flex-1 flex flex-col min-h-0">
                 {/* Speaker & Emotion */}
-                <div className="px-4 py-3 border-b border-[var(--border-color)]">
-                  <div className="flex items-center gap-4">
-                    {/* Speaker speed */}
+                <div className="px-3 py-2 border-b border-[var(--border-color)] shrink-0">
+                  <div className="flex items-center gap-2">
                     <div className="flex-1">
                       <span className="text-[10px] text-[var(--text-muted)]">语速</span>
                       <div className="relative h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full mt-1 overflow-hidden">
@@ -873,7 +1155,6 @@ const MeetingRoom: React.FC = () => {
                         <div className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-white border-2 border-[var(--color-gradient-start)] shadow-sm" style={{ left: '65%', transform: 'translate(-50%, -50%)' }} />
                       </div>
                     </div>
-                    {/* Emotion */}
                     <div className="flex items-center gap-1">
                       <Smile className="h-4 w-4 text-yellow-500" />
                       <span className="text-xs font-mono text-[var(--text-secondary)]">87%</span>
@@ -882,7 +1163,7 @@ const MeetingRoom: React.FC = () => {
                 </div>
 
                 {/* AI Chat */}
-                <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+                <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2 min-h-0">
                   {aiMessages.length === 0 && (
                     <p className="text-xs text-[var(--text-muted)] text-center py-8">向 AI 提问或选择预置指令</p>
                   )}
@@ -912,7 +1193,7 @@ const MeetingRoom: React.FC = () => {
                 </div>
 
                 {/* AI Input */}
-                <div className="px-4 py-2 border-t border-[var(--border-color)]">
+                <div className="px-3 py-2 border-t border-[var(--border-color)] shrink-0">
                   <div className="flex gap-2">
                     <input
                       value={aiInput}
@@ -926,7 +1207,7 @@ const MeetingRoom: React.FC = () => {
                 </div>
 
                 {/* Predefined commands */}
-                <div className="px-4 py-3 border-t border-[var(--border-color)]">
+                <div className="px-3 py-2 border-t border-[var(--border-color)] shrink-0">
                   <div className="grid grid-cols-2 gap-2">
                     {aiCommands.map((cmd, i) => {
                       const Icon = cmd.icon
@@ -953,7 +1234,7 @@ const MeetingRoom: React.FC = () => {
                 </div>
 
                 {/* AI Notifications */}
-                <div className="px-4 py-2 border-t border-[var(--border-color)] space-y-2">
+                <div className="px-3 py-2 border-t border-[var(--border-color)] space-y-2 shrink-0">
                   <AnimatePresence>
                     {notifications.map((n) => (
                       <AiNotificationToast key={n.id} notification={n} onDismiss={(id) => setNotifications((prev) => prev.filter((x) => x.id !== id))} />
@@ -961,9 +1242,50 @@ const MeetingRoom: React.FC = () => {
                   </AnimatePresence>
                 </div>
               </div>
-            </motion.aside>
-          )}
-        </AnimatePresence>
+            )}
+
+            {/* ─── 会议聊天 ─── */}
+            {rightTab === 'chat' && (
+              <div className="flex-1 flex flex-col min-h-0">
+                {/* Chat message list */}
+                <div ref={chatListRef} className="flex-1 overflow-y-auto px-3 py-2 space-y-2 min-h-0">
+                  {chatMessages.length === 0 && (
+                    <p className="text-xs text-[var(--text-muted)] text-center py-8">暂无消息，发送第一条消息吧</p>
+                  )}
+                  {chatMessages.map((msg) => {
+                    const isSelf = currentUser?.id === msg.userId
+                    return (
+                      <div key={msg.id} className={cn('flex gap-2 max-w-[90%]', isSelf ? 'ml-auto flex-row-reverse' : '')}>
+                        <Avatar name={msg.userName} size="sm" />
+                        <div className={cn('rounded-md px-3 py-2 text-xs leading-relaxed', isSelf ? 'bg-[var(--color-primary)] text-white' : 'bg-slate-100 dark:bg-slate-800 text-[var(--text-primary)]')}>
+                          <div className="flex items-center gap-2 mb-0.5">
+                            <span className="text-[10px] font-medium opacity-80">{msg.userName}</span>
+                            <span className="text-[10px] opacity-60">{new Date(msg.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span>
+                          </div>
+                          <p className="break-words">{msg.content}</p>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                {/* Chat input */}
+                <div className="px-3 py-2 border-t border-[var(--border-color)] shrink-0">
+                  <div className="flex gap-2">
+                    <input
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') sendChatMessage() }}
+                      placeholder="输入消息..."
+                      className="flex-1 text-xs border border-[var(--border-color)] rounded-[6px] px-3 py-1.5 bg-transparent text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--color-primary)]"
+                    />
+                    <Button size="sm" onClick={sendChatMessage} disabled={!chatInput.trim()}>发送</Button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </aside>
+        )}
       </div>
 
       {/* ─── 5. Bottom Status Bar ─── */}
@@ -991,8 +1313,18 @@ const MeetingRoom: React.FC = () => {
         <p className="text-sm text-[var(--text-secondary)] mb-4">确定要结束当前会议吗？会议记录将自动保存。</p>
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={() => setShowEndModal(false)}>取消</Button>
-          <Button variant="danger" onClick={() => {
+          <Button variant="danger" onClick={async () => {
             setShowEndModal(false)
+            cancelReminder(meetingId || meeting.id)
+            try {
+              await apiFetch(`/meetings/${meetingId || meeting.id}/end`, {
+                method: 'PATCH',
+              })
+            } catch (e) {
+              console.error('结束会议失败:', e)
+            }
+            // Stop speech recognition
+            stopRecognition()
             updateMeeting(meetingId || meeting.id, {
               status: 'completed',
               endTime: new Date().toISOString(),
