@@ -887,7 +887,7 @@ export default function CreateMeeting() {
       // 确保 status 始终存在且为后端可识别的值
       cleanedData.status = mode === 'instant' ? 'ongoing' : 'scheduled'
 
-      const meeting = await createMeeting(cleanedData)
+      const meeting = await createMeeting(cleanedData as unknown as Parameters<typeof createMeeting>[0])
       
       if (meeting.endTime) {
         scheduleEndReminder(meeting.id, meeting.endTime, meeting.title)

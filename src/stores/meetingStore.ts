@@ -90,6 +90,7 @@ interface MeetingState {
     backgroundInfo?: string;
     agenda?: { id: string; title: string; duration: number }[];
     participants?: { userId: string; role: string; isSpeaker: boolean }[];
+    status?: string;
   }) => Promise<Meeting>;
   deleteMeeting: (id: string) => Promise<void>;
 

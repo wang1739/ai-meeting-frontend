@@ -486,18 +486,19 @@ export default function MeetingReview() {
   }, [])
 
   const handleToggleCheck = useCallback((itemId: string) => {
-    setKanbanItems((prev) => {
+    setKanbanItems((prev): ActionItem[] => {
       const item = prev.find((i) => i.id === itemId)
       if (!item) return prev
-      const nextStatus = item.status === 'done' ? 'todo' : 'done'
+      const nextStatus = item.status === 'done' ? ('todo' as const) : ('done' as const)
       const updated = prev.map((i) =>
         i.id === itemId ? { ...i, status: nextStatus } : i,
-      )
+      ) as ActionItem[]
 
       // Persist to backend asynchronously
       apiFetch(`/meetings/${meetingId}/action-items/${itemId}`, {
         method: 'PATCH',
-        body: { status: nextStatus },
+        rawBody: true,
+        body: JSON.stringify({ status: nextStatus }),
       }).catch(() => {
         // Rollback on failure
         setKanbanItems(prev)

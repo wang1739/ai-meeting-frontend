@@ -14,7 +14,12 @@ function formatDate(dateStr: string): string {
    Word 导出
    ================================================================ */
 export async function exportWord(meeting: any, summary: any, actionItems: any[]) {
-  const { Document: Doc, Packer: Pk, Paragraph: Par, HeadingLevel: HL } = await import('docx')
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const docx = await import('docx') as any
+  const Doc = docx.Document
+  const Pk = docx.Packer
+  const Par = docx.Paragraph
+  const HL = docx.HeadingLevel
 
   const children: any[] = []
 
