@@ -979,6 +979,18 @@ const MeetingRoom: React.FC = () => {
     { key: 'whiteboard', label: '材料白板' },
   ] as const
 
+  // 数据加载中 → 显示 loading，避免 DOM 操作过早
+  if (isLoading) {
+    return (
+      <div className="h-screen w-screen flex items-center justify-center bg-[var(--bg-primary)]">
+        <div className="text-center">
+          <div className="animate-spin w-8 h-8 border-2 border-[var(--color-primary)] border-t-transparent rounded-full mx-auto mb-4" />
+          <p className="text-sm text-[var(--text-muted)]">加载中...</p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="h-screen w-screen flex flex-col overflow-hidden bg-[var(--bg-primary)]">
       {/* ─── 1. Top Control Bar ─── */}
