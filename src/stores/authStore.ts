@@ -1,7 +1,10 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-const API_BASE = 'http://localhost:3000/api/auth';
+const API_BASE = () => {
+  const base = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+  return `${base}/auth`;
+};
 
 export interface UserInfo {
   id: string;
@@ -33,7 +36,7 @@ export const useAuthStore = create<AuthState>()(
       login: async (email: string, password: string) => {
         set({ isLoading: true });
         try {
-          const res = await fetch(`${API_BASE}/login`, {
+          const res = await fetch(`${API_BASE()}/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email, password }),
@@ -60,7 +63,7 @@ export const useAuthStore = create<AuthState>()(
       register: async (email: string, name: string, password: string) => {
         set({ isLoading: true });
         try {
-          const res = await fetch(`${API_BASE}/register`, {
+          const res = await fetch(`${API_BASE()}/register`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email, name, password }),
